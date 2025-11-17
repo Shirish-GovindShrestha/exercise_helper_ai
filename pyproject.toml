@@ -1,0 +1,14 @@
+[project]
+name = "exercise-helper-ai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.7",
+    "mediapipe>=0.10.21",
+    "numpy>=1.26.4",
+    "opencv-python>=4.11.0.86",
+    "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
+]
