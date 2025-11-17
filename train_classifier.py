@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
-from pathlib import Path
 from dataset.dataset_loader import load_split, get_label_map
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, classification_report
 from sklearn.utils.class_weight import compute_class_weight
@@ -104,14 +103,14 @@ print(f"Trainable parameters: {trainable_params:,}")
 param_groups = []
 
 # Always train LSTM + classifier
-param_groups.append({'params': model.lstm.parameters(), 'lr': config.LSTM_LR})
-param_groups.append({'params': model.fc.parameters(), 'lr': config.LSTM_LR})
+param_groups.append({'params': model.lstm.parameters(), 'lr': config.LSTM_LR, 'name': 'LSTM'})
+param_groups.append({'params': model.fc.parameters(), 'lr': config.LSTM_LR, 'name': 'FC'})
 
 # Train/fine-tune encoder if needed
 if config.USE_AUTOENCODER and not config.FREEZE_ENCODER:
     encoder_lr = config.LSTM_LR * config.ENCODER_LR_RATIO
     print(f"🔓 Fine-tuning encoder (LR={encoder_lr:.6f}) + LSTM + classifier (LR={config.LSTM_LR:.6f})")
-    param_groups.append({'params': model.encoder.parameters(), 'lr': encoder_lr})
+    param_groups.append({'params': model.encoder.parameters(), 'lr': encoder_lr, 'name': 'Encoder'})
 
 elif config.USE_AUTOENCODER and config.FREEZE_ENCODER:
     print("🔒 Encoder frozen — training only LSTM + classifier")
@@ -148,6 +147,7 @@ for epoch in range(config.LSTM_EPOCHS):
         total_loss += loss.item()
     
     avg_loss = total_loss / len(train_loader)
+
     
     # Evaluation phase
     model.eval()
@@ -265,3 +265,8 @@ torch.save({
 
 print(f"\n✅ Best classifier + metrics saved to {config.LSTM_BEST}")
 print(f"📈 Confusion matrix saved to confusion_matrix.png")
+
+del model
+del optimizer
+del criterion  
+torch.cuda.empty_cache()

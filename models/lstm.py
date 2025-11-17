@@ -29,7 +29,7 @@ class ExerciseClassifier(nn.Module):
             self.encoder = None
 
         # --- LSTM for temporal modeling ---
-        self.lstm = nn.LSTM(
+        self.lstm = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_dim,
             num_layers=1,
@@ -56,8 +56,12 @@ class ExerciseClassifier(nn.Module):
         else:
             z_seq = x  # raw input
 
+            
+
         # --- LSTM ---
-        lstm_out, (h_n, c_n) = self.lstm(z_seq)
+        #lstm_out, (h_n, c_n) = self.lstm(z_seq)
+
+        lstm_out, h_n, = self.lstm(z_seq)
 
         # --- Last hidden state ---
         if self.use_bilstm:

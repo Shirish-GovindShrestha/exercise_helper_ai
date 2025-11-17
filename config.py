@@ -21,7 +21,7 @@ AE_BATCH_SIZE = 64
 # ----- LSTM classifier -----
 LSTM_HIDDEN_DIM = 128
 LSTM_NUM_LAYERS = 1
-LSTM_BIDIRECTIONAL = True
+LSTM_BIDIRECTIONAL = False
 LSTM_DROPOUT = 0.4
 LSTM_BATCH_SIZE = 32
 LSTM_EPOCHS = 50
@@ -32,12 +32,17 @@ ENCODER_LR_RATIO = 0.1
 
 # ----- compute -----
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-USE_AUTOENCODER = False
-FREEZE_ENCODER = True
+USE_AUTOENCODER = True
+FREEZE_ENCODER = False
 
 
 # ----- I/O -----
-MODEL_DIR = Path("models")
+MODEL_DIR = Path("saved_models")
 MODEL_DIR.mkdir(exist_ok=True, parents=True)
 AE_BEST = MODEL_DIR / "autoencoder_best.pth"
 LSTM_BEST = MODEL_DIR / "lstm_classifier_best.pth"
+
+
+
+#----Interference----
+EXPECTED_SEQUENCE_LENGTH = 60

@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-import numpy as np
-from pathlib import Path
 import time
 from dataset.dataset_loader import load_split
 from models.autoencoder import FrameAutoencoder
