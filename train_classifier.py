@@ -12,28 +12,10 @@ import seaborn as sns
 from models.early_stopping import EarlyStopping
 from models.autoencoder import FrameAutoencoder as UnifiedAutoencoder
 from models.lstm import ExerciseClassifier
+import config
 
 
-
-# --- Config ---
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-BATCH_SIZE = 32
-EPOCHS = 50
-LR = 0.006
-PATIENCE = 15
-MODEL_SAVE_PATH = Path("models/classifier_best.pth")
-AUTOENCODER_PATH = Path("models/autoencoder_best.pth")
-
-# Model architecture config
-INPUT_DIM = 99
-LATENT_DIM = 16
-HIDDEN_DIM = 128
-DROPOUT = 0.4
-
-# Autoencoder options
-USE_AUTOENCODER = False  # Set to False to train from scratch without pretrained weights
-FREEZE_ENCODER = False  # Set to True to freeze encoder, False to fine-tune (only if USE_PRETRAINED_AUTOENCODER=True)
-ENCODER_LR_RATIO = 0.1  # Learning rate multiplier for encoder when fine-tuning
+DEVICE = config.DEVICE
 
 
 # --- Load Data ---
@@ -51,12 +33,12 @@ y_eval_t = torch.from_numpy(y_eval).long()
 
 train_loader = DataLoader(
     TensorDataset(X_train_t, y_train_t),
-    batch_size=BATCH_SIZE,
+    batch_size=config.LSTM_BATCH_SIZE,
     shuffle=True
 )
 eval_loader = DataLoader(
     TensorDataset(X_eval_t, y_eval_t),
-    batch_size=BATCH_SIZE,
+    batch_size=config.LSTM_BATCH_SIZE,
     shuffle=False
 )
 
@@ -75,11 +57,15 @@ autoencoder = None
 
 
 # --- Load or Initialize Autoencoder ---
-if USE_AUTOENCODER:
-    print(f"\n🔧 Loading pretrained autoencoder from {AUTOENCODER_PATH}...")
-    checkpoint = torch.load(AUTOENCODER_PATH, map_location=DEVICE)
+if config.USE_AUTOENCODER:
+    print(f"\n🔧 Loading pretrained autoencoder from {config.AE_BEST}...")
+    checkpoint = torch.load(config.AE_BEST, map_location=DEVICE)
     
-    autoencoder = UnifiedAutoencoder(input_dim=INPUT_DIM, latent_dim=LATENT_DIM, dropout=DROPOUT)
+    autoencoder = UnifiedAutoencoder(
+        input_dim=config.INPUT_DIM,
+        latent_dim=config.AE_LATENT_DIM,
+        dropout=config.AE_DROPOUT
+    )
     
     # Try to load state dict flexibly
     state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -94,57 +80,58 @@ if USE_AUTOENCODER:
     print("✅ Pretrained autoencoder loaded successfully")
 
 
-# --- Build Classifier ---
-print(f"\n🏗️ Building classifier (freeze_encoder={FREEZE_ENCODER})...")
+print(f"\n🏗️ Building classifier (freeze_encoder={config.FREEZE_ENCODER})...")
 model = ExerciseClassifier(
-    autoencoder,
-    NUM_CLASSES,
-    hidden_dim=HIDDEN_DIM,
-    freeze_encoder=FREEZE_ENCODER,
-    use_autoencoder=USE_AUTOENCODER
+    autoencoder=autoencoder,
+    num_classes=NUM_CLASSES,
+    input_dim=config.INPUT_DIM if not config.USE_AUTOENCODER else config.AE_LATENT_DIM, # raw landmark input dimension
+    hidden_dim=config.LSTM_HIDDEN_DIM,
+    freeze_encoder=config.FREEZE_ENCODER,
+    use_autoencoder=config.USE_AUTOENCODER,
+    use_bilstm=config.LSTM_BIDIRECTIONAL,
+    dropout=config.LSTM_DROPOUT
+).to(config.DEVICE)
 
-).to(DEVICE)
+# Count total parameters
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+print(f"Total parameters: {total_params:,}")
+print(f"Trainable parameters: {trainable_params:,}")
+
 
 # Setup optimizer with different learning rates
 param_groups = []
 
-if FREEZE_ENCODER:
-    if USE_AUTOENCODER:     # only valid if encoder exists
-        print("🔒 Encoder frozen — training only LSTM + classifier")
-    else:
-        print("ℹ️ No encoder — training LSTM + classifier only")
+# Always train LSTM + classifier
+param_groups.append({'params': model.lstm.parameters(), 'lr': config.LSTM_LR})
+param_groups.append({'params': model.fc.parameters(), 'lr': config.LSTM_LR})
 
-    # Train only LSTM + classifier
-    param_groups.append({'params': model.lstm.parameters(), 'lr': LR})
-    param_groups.append({'params': model.fc.parameters(), 'lr': LR})
+# Train/fine-tune encoder if needed
+if config.USE_AUTOENCODER and not config.FREEZE_ENCODER:
+    encoder_lr = config.LSTM_LR * config.ENCODER_LR_RATIO
+    print(f"🔓 Fine-tuning encoder (LR={encoder_lr:.6f}) + LSTM + classifier (LR={config.LSTM_LR:.6f})")
+    param_groups.append({'params': model.encoder.parameters(), 'lr': encoder_lr})
 
+elif config.USE_AUTOENCODER and config.FREEZE_ENCODER:
+    print("🔒 Encoder frozen — training only LSTM + classifier")
 else:
-    # Encoder will be trained only if it exists
-    if USE_AUTOENCODER:
-        encoder_lr = LR * ENCODER_LR_RATIO
-        print(f"🔓 Fine-tuning encoder (LR={encoder_lr:.6f}) + LSTM + classifier (LR={LR:.6f})")
-
-        param_groups.append({'params': model.encoder.parameters(), 'lr': encoder_lr})
-    else:
-        print(f"🆕 No encoder — training LSTM + classifier (LR={LR:.6f})")
-
-    # Always train LSTM + classifier
-    param_groups.append({'params': model.lstm.parameters(), 'lr': LR})
-    param_groups.append({'params': model.fc.parameters(), 'lr': LR})
+    print("ℹ️ No encoder — training LSTM + classifier only")
 
 # Build optimizer
 optimizer = optim.Adam(param_groups, weight_decay=1e-4)
 
+
 # Loss function with class weights
 criterion = nn.CrossEntropyLoss(weight=class_weights)
-early_stopping = EarlyStopping(patience=PATIENCE, verbose=True)
+early_stopping = EarlyStopping(patience=config.LSTM_PATIENCE, mode='max')
 
 
 # --- Training Loop ---
-print(f"\n🚀 Training for up to {EPOCHS} epochs with early stopping (patience={PATIENCE})...")
+print(f"\n🚀 Training for up to {config.LSTM_EPOCHS} epochs with early stopping (patience={config.LSTM_PATIENCE})...")
 best_metrics = {}
 
-for epoch in range(EPOCHS):
+for epoch in range(config.LSTM_EPOCHS):
     # Training phase
     model.train()
     total_loss = 0
@@ -183,7 +170,8 @@ for epoch in range(EPOCHS):
     recall = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
     f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
     
-    print(f"Epoch {epoch+1:3d}/{EPOCHS} | Loss: {avg_loss:.4f} | "
+    print("-" * 100)
+    print(f"Epoch {epoch+1:3d}/{config.LSTM_EPOCHS} | Loss: {avg_loss:.4f} | "
           f"Acc: {acc:.4f} | P: {precision:.4f} | R: {recall:.4f} | F1: {f1:.4f}")
     
     # Early stopping based on F1 score
@@ -253,7 +241,6 @@ print(classification_report(
 ))
 
 # Save model
-MODEL_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
 torch.save({
     'model_state_dict': model.state_dict(),
     'encoder_state_dict': model.encoder.state_dict(),
@@ -263,18 +250,18 @@ torch.save({
     'precision': best_metrics["precision"],
     'recall': best_metrics["recall"],
     'f1': best_metrics["f1"],
-    'use_pretrained_autoencoder': USE_AUTOENCODER,
-    'freeze_encoder': FREEZE_ENCODER,
+    'use_pretrained_autoencoder': config.USE_AUTOENCODER,
+    'freeze_encoder': config.FREEZE_ENCODER,
     'config': {
-        'input_dim': INPUT_DIM,
-        'latent_dim': LATENT_DIM,
-        'hidden_dim': HIDDEN_DIM,
-        'dropout': DROPOUT,
-        'batch_size': BATCH_SIZE,
-        'lr': LR,
-        'encoder_lr_ratio': ENCODER_LR_RATIO
+        'input_dim': config.INPUT_DIM,
+        'latent_dim': config.AE_LATENT_DIM,
+        'hidden_dim': config.LSTM_HIDDEN_DIM,
+        'dropout': config.LSTM_DROPOUT,
+        'batch_size': config.LSTM_BATCH_SIZE,
+        'lr': config.LSTM_LR,
+        'encoder_lr_ratio': config.ENCODER_LR_RATIO
     }
-}, MODEL_SAVE_PATH)
+}, config.LSTM_BEST)
 
-print(f"\n✅ Best classifier + metrics saved to {MODEL_SAVE_PATH}")
+print(f"\n✅ Best classifier + metrics saved to {config.LSTM_BEST}")
 print(f"📈 Confusion matrix saved to confusion_matrix.png")

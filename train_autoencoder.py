@@ -8,22 +8,7 @@ import time
 from dataset.dataset_loader import load_split
 from models.autoencoder import FrameAutoencoder
 from models.early_stopping import EarlyStopping
-
-# --- Configuration ---
-class Config:
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    INPUT_DIM = 99
-    LATENT_DIM = 16
-    DROPOUT = 0.2
-    BATCH_SIZE = 64
-    EPOCHS = 20
-    LR = 0.001
-    PATIENCE = 10
-
-    MODEL_DIR = Path("models")
-    MODEL_SAVE_PATH = MODEL_DIR / "autoencoder_best.pth"
-    MODEL_DIR.mkdir(exist_ok=True, parents=True)
-
+import config
 
 # --- Load Data ---
 print("\n" + "="*70)
@@ -39,8 +24,8 @@ print(f"Eval samples: {len(X_eval):,}")
 X_train_t = torch.from_numpy(X_train).float()
 X_eval_t = torch.from_numpy(X_eval).float()
 
-train_loader = DataLoader(TensorDataset(X_train_t), batch_size=Config.BATCH_SIZE, shuffle=True)
-eval_loader = DataLoader(TensorDataset(X_eval_t), batch_size=Config.BATCH_SIZE, shuffle=False)
+train_loader = DataLoader(TensorDataset(X_train_t), batch_size=config.AE_BATCH_SIZE, shuffle=True)
+eval_loader = DataLoader(TensorDataset(X_eval_t), batch_size=config.AE_BATCH_SIZE, shuffle=False)
 
 
 # --- Initialize Model ---
@@ -49,33 +34,33 @@ print("Initializing autoencoder model...")
 print("="*70)
 
 model = FrameAutoencoder(
-    input_dim=Config.INPUT_DIM,
-    latent_dim=Config.LATENT_DIM,
-    dropout=Config.DROPOUT
-).to(Config.DEVICE)
+    input_dim=config.INPUT_DIM,
+    latent_dim=config.AE_LATENT_DIM,
+    dropout=config.AE_DROPOUT
+).to(config.DEVICE)
 
 print(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
-optimizer = optim.Adam(model.parameters(), lr=Config.LR)
+optimizer = optim.Adam(model.parameters(), lr=config.AE_LR)
 criterion = nn.MSELoss()
-early_stopping = EarlyStopping(patience=Config.PATIENCE)
+early_stopping = EarlyStopping(patience=config.AE_PATIENCE)
 
 
 # --- Training ---
 history = {"train_loss": [], "val_loss": []}
 
 print("\n" + "="*70)
-print(f"🚀 Starting AUTOENCODER training (patience={Config.PATIENCE})")
+print(f"🚀 Starting AUTOENCODER training (patience={config.AE_PATIENCE})")
 print("="*70)
 
 start_time = time.time()
 
-for epoch in range(Config.EPOCHS):
+for epoch in range(config.AE_EPOCHS):
     model.train()
     total_loss = 0
 
     for (X,) in train_loader:
-        X = X.to(Config.DEVICE)
+        X = X.to(config.DEVICE)
         optimizer.zero_grad()
 
         X_recon, _ = model(X)
@@ -92,13 +77,13 @@ for epoch in range(Config.EPOCHS):
     total_eval_loss = 0
     with torch.no_grad():
         for (X,) in eval_loader:
-            X = X.to(Config.DEVICE)
+            X = X.to(config.DEVICE)
             X_recon, _ = model(X)
             total_eval_loss += criterion(X_recon, X).item()
 
     avg_val_loss = total_eval_loss / len(eval_loader)
 
-    print(f"\nEpoch {epoch+1}/{Config.EPOCHS} | "
+    print(f"\nEpoch {epoch+1}/{config.AE_EPOCHS} | "
           f"Train Loss: {avg_train_loss:.6f} | "
           f"Val Loss: {avg_val_loss:.6f}")
 
@@ -128,8 +113,8 @@ model.load_state_dict(early_stopping.best_model_state)
 # Save autoencoder
 torch.save({
     "model_state_dict": model.state_dict(),
-    "latent_dim": Config.LATENT_DIM,
+    "latent_dim": config.AE_LATENT_DIM,
     "history": history,
-}, Config.MODEL_SAVE_PATH)
+}, config.AE_BEST)
 
-print(f"\n✅ Best AUTOENCODER saved to {Config.MODEL_SAVE_PATH}")
+print(f"\n✅ Best AUTOENCODER saved to {config.AE_BEST}")
