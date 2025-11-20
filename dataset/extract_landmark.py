@@ -10,7 +10,7 @@ from typing import Tuple, List
 RAW_VIDEO_DIR = Path("data/raw_videos")
 LANDMARK_DIR = Path("data/landmarks")
 SEQUENCE_LENGTH = 60  # frames per sample
-STEP = 1              # sliding window step
+STEP = 10              # sliding window step
 NUM_JOBS = os.cpu_count()  # parallel processes
 NUM_LANDMARKS = 33
 LANDMARK_DIMS = 3  # x, y, z

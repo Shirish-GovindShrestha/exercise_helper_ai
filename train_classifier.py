@@ -58,7 +58,7 @@ autoencoder = None
 # --- Load or Initialize Autoencoder ---
 if config.USE_AUTOENCODER:
     print(f"\n🔧 Loading pretrained autoencoder from {config.AE_BEST}...")
-    checkpoint = torch.load(config.AE_BEST, map_location=DEVICE)
+    checkpoint = torch.load(config.AE_BEST, map_location=DEVICE, weights_only=False)
     
     autoencoder = UnifiedAutoencoder(
         input_dim=config.INPUT_DIM,
@@ -169,6 +169,8 @@ for epoch in range(config.LSTM_EPOCHS):
     precision = precision_score(all_labels, all_preds, average='weighted', zero_division=0)
     recall = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
     f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+
+ 
     
     print("-" * 100)
     print(f"Epoch {epoch+1:3d}/{config.LSTM_EPOCHS} | Loss: {avg_loss:.4f} | "
@@ -191,6 +193,9 @@ for epoch in range(config.LSTM_EPOCHS):
             "labels": all_labels,
             "preds": all_preds
         }
+
+    if f1 == 1.0:
+        break  # Perfect score achieved
 
 # Restore best weights
 model.load_state_dict(early_stopping.best_model_state)
@@ -243,7 +248,7 @@ print(classification_report(
 # Save model
 torch.save({
     'model_state_dict': model.state_dict(),
-    'encoder_state_dict': model.encoder.state_dict(),
+    'encoder_state_dict': model.encoder.state_dict() if config.USE_AUTOENCODER else None,
     'num_classes': NUM_CLASSES,
     'label_map': label_map,
     'accuracy': best_metrics["accuracy"],

@@ -42,4 +42,8 @@ torch.onnx.export(
     "exercise_classifier.onnx",
     input_names=["input"],
     output_names=["output"],
+    dynamic_axes={
+        "input": {0: "batch_size", 1: "seq_len"},  # make batch_size and seq_len dynamic
+        "output": {0: "batch_size"}
+    },
 )
