@@ -271,7 +271,4 @@ torch.save({
 print(f"\n✅ Best classifier + metrics saved to {config.LSTM_BEST}")
 print(f"📈 Confusion matrix saved to confusion_matrix.png")
 
-del model
-del optimizer
-del criterion  
 torch.cuda.empty_cache()

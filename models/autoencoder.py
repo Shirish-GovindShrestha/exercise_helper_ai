@@ -3,25 +3,25 @@ import torch.nn as nn
 
 # --- Autoencoder Model with Dropout ---
 class FrameAutoencoder(nn.Module):
-    def __init__(self, input_dim=99, latent_dim=64, dropout=0.2):
+    def __init__(self, input_dim=99, latent_dim=64, hidden_dim =128 ,dropout=0.2):
         super().__init__()
 
         # Encoder with dropout
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 128),
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, latent_dim),
+            nn.Linear(hidden_dim, latent_dim),
             nn.ReLU(),
             nn.Dropout(dropout)
         )
 
         # Decoder with dropout
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, 128),
+            nn.Linear(latent_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, input_dim)
+            nn.Linear(hidden_dim, input_dim)
         )
 
     def encode(self, x):

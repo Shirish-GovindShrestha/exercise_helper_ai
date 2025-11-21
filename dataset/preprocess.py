@@ -8,104 +8,148 @@ import random
 RAW_LANDMARKS_DIR = Path("data/landmarks")
 PROCESSED_DIR = Path("data/processed")
 SPLIT_RATIOS = {"train": 0.7, "eval": 0.15, "test": 0.15}
-EXPECTED_SEQUENCE_LENGTH = 60  # Should match extraction script
-NUM_LANDMARKS = 33   # New constant for clarity
-LANDMARK_DIMS = 3    # New constant for clarity
-EXPECTED_LANDMARKS = NUM_LANDMARKS * LANDMARK_DIMS  # 33 landmarks × 3 coordinates (x,y,z)
+EXPECTED_SEQUENCE_LENGTH = 90  # Should match extraction script
+NUM_LANDMARKS = 33     # New constant for clarity
+LANDMARK_DIMS = 3      # New constant for clarity
+EXPECTED_LANDMARKS = NUM_LANDMARKS * LANDMARK_DIMS  # 33 landmarks × 3 coordinates (x,y,z)
+
+# --- NEW ANGLE CONSTANTS ---
+ANGLES_DIM = 14  # The actual number of calculated joint angles
+
+# Define key joints for angle calculation (MediaPipe Indices)
+# Format: [Anchor/Middle Joint, Start Joint, End Joint]
+JOINT_CHAINS = [
+    # Right Arm
+    [14, 12, 16],  # Elbow Angle (14:Elbow, 12:Shoulder, 16:Wrist)
+    [12, 11, 14],  # Shoulder Angle (R) (12:Shoulder, 11:L-Shoulder, 14:Elbow)
+    # Left Arm
+    [13, 11, 15],  # Elbow Angle (13:Elbow, 11:Shoulder, 15:Wrist)
+    [11, 12, 13],  # Shoulder Angle (L) (11:Shoulder, 12:R-Shoulder, 13:Elbow)
+    # Right Leg
+    [26, 24, 28],  # Knee Angle (26:Knee, 24:Hip, 28:Ankle)
+    [24, 23, 26],  # Hip Angle (R) (24:Hip, 23:L-Hip, 26:Knee)
+    # Left Leg
+    [25, 23, 27],  # Knee Angle (25:Knee, 23:Hip, 27:Ankle)
+    [23, 24, 25],  # Hip Angle (L) (23:Hip, 24:R-Hip, 25:Knee)
+    # Torso/Back (using midpoint for better twist)
+    [12, 24, 11],  # Torso Tilt/Lean (Shoulder (R) -> Hip (R) -> Shoulder (L))
+    [11, 23, 12],  # Torso Tilt/Lean (Shoulder (L) -> Hip (L) -> Shoulder (R))
+    # Ankle (Simpler 3-point chains for the feet)
+    [28, 26, 30],  # Ankle Angle (R)
+    [27, 25, 29],  # Ankle Angle (L)
+    # Wrist (Simple 3-point chains for the hands)
+    [16, 14, 20],  # Wrist Angle (R)
+    [15, 13, 19],  # Wrist Angle (L)
+]
+
 np.random.seed(1)
 random.seed(1) # For data augmentation
 
 
-# --- BODY-CENTRIC NORMALIZATION FUNCTION (UPDATED) ---
-def normalize_body_centric(sequences: List[np.ndarray]) -> List[np.ndarray]:
+# --- ANGLE CALCULATION HELPERS ---
+
+def vector_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Calculates the angle (in degrees) at joint B formed by vectors BA and BC."""
+    
+    # Vector BA
+    ba = a - b
+    # Vector BC
+    bc = c - b
+    
+    # Normalize vectors to avoid scaling issues
+    # Added 1e-6 to prevent division by zero for zero-length vectors
+    ba_norm = ba / (np.linalg.norm(ba) + 1e-6)
+    bc_norm = bc / (np.linalg.norm(bc) + 1e-6)
+
+    # Use dot product definition of angle
+    cosine_angle = np.dot(ba_norm, bc_norm)
+    
+    # Clamp to [-1, 1]
+    cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+    
+    # Return angle in degrees
+    angle = np.degrees(np.arccos(cosine_angle))
+    return angle
+
+
+def landmarks_to_angles(sequences: List[np.ndarray]) -> List[np.ndarray]:
     """
-    Removes global position by translating coordinates to a central anchor point (Mid-Hip or Mid-Shoulder fallback).
+    Converts raw landmark sequences into 14 joint angle sequences (no padding).
     
     Args:
-        sequences: List of arrays, each with shape (n_seqs, seq_len, n_features).
+        sequences: List of video sequences, each shape (N_samples, Seq_len, 99).
         
     Returns:
-        List of arrays with body-centric coordinates.
+        List of angle sequences, each shape (N_samples, Seq_len, 14).
     """
-    normalized_sequences = []
+    angle_sequences = []
 
     for seq in sequences:
-        # 1. Reshape to (N_Sequences, Seq_len, 33, 3)
-        reshaped_data = seq.reshape(seq.shape[0], seq.shape[1], NUM_LANDMARKS, LANDMARK_DIMS).copy()
-        translated_sequences = []
+        # Reshape to (N_samples, Seq_len, 33, 3)
+        reshaped_data = seq.reshape(seq.shape[0], seq.shape[1], NUM_LANDMARKS, LANDMARK_DIMS)
+        
+        all_samples_angles = []
 
-        # Iterate over each sample sequence (in case video file had multiple sequences)
-        for sample_seq in reshaped_data:
-            translated_frames = []
+        for sample_seq in reshaped_data: # sample_seq shape (Seq_len, 33, 3)
+            sample_angles = []
             
-            # Iterate over each frame in the sequence
-            for frame_idx in range(sample_seq.shape[0]):
-                frame = sample_seq[frame_idx] # shape (33, 3)
-                
-                # Check for zero frame (entirely missed)
+            for frame in sample_seq: # frame shape (33, 3)
+                # Check for zero frame (padding)
                 if np.all(frame == 0):
-                    translated_frames.append(frame) # Keep as (0,0,0) centered
+                    # Maintain the padding shape (14 features)
+                    sample_angles.append(np.zeros(ANGLES_DIM, dtype=np.float32))
                     continue
 
-                # Define coordinate slices for checking/calculation
-                # Left Hip (23), Right Hip (24)
-                lh_coords = frame[23, :] 
-                rh_coords = frame[24, :] 
-                # Left Shoulder (11), Right Shoulder (12)
-                ls_coords = frame[11, :] 
-                rs_coords = frame[12, :] 
+                frame_angles = []
                 
-                # --- Determine Anchor Point ---
-                
-                # Primary: Mid-Hip (Check if hips are non-zero)
-                is_hip_visible = (not np.all(lh_coords == 0)) and (not np.all(rh_coords == 0))
-                is_shoulder_visible = (not np.all(ls_coords == 0)) and (not np.all(rs_coords == 0))
-
-                if is_hip_visible:
-                    center_point = (lh_coords + rh_coords) / 2
-                
-                # Fallback: Mid-Shoulder
-                elif is_shoulder_visible:
-                    center_point = (ls_coords + rs_coords) / 2
-                
-                # Last Resort: (0, 0, 0) - If body is not tracked reliably (e.g. only a few non-hip/shoulder points)
-                else:
-                    center_point = np.zeros(LANDMARK_DIMS, dtype=np.float32)
-
-                # 2. Translate: Subtract the chosen center point from all landmarks
-                translated_frame = frame - center_point
-                translated_frames.append(translated_frame)
+                for anchor_idx, start_idx, end_idx in JOINT_CHAINS:
+                    # Get the landmark coordinates
+                    a, b, c = frame[start_idx], frame[anchor_idx], frame[end_idx]
+                    
+                    # Calculate angle
+                    angle = vector_angle(a, b, c)
+                    
+                    # Store angle normalized by the max possible angle (180 degrees)
+                    frame_angles.append(angle / 180.0) 
+                    
+                # NO PADDING! We use the 14 calculated angles directly.
+                sample_angles.append(np.array(frame_angles, dtype=np.float32))
             
-            # Re-stack frames for the sample sequence
-            translated_sequences.append(np.stack(translated_frames, axis=0))
-        
-        # 3. Flatten back to (N_Sequences, Seq_len, 99)
-        # Handle cases where multiple sequences might result from one video file
-        centered_video_data = np.concatenate(translated_sequences, axis=0)
-        
-        normalized_sequences.append(centered_video_data.reshape(seq.shape))
-        
-    return normalized_sequences
+            # Stack all frames for this sample
+            all_samples_angles.append(np.stack(sample_angles, axis=0))
+
+        # Concatenate and reshape back to (N_samples, Seq_len, 14)
+        angle_video_data = np.concatenate(all_samples_angles, axis=0)
+        angle_sequences.append(angle_video_data.reshape(seq.shape[0], seq.shape[1], ANGLES_DIM))
+            
+    return angle_sequences
 # --------------------------------------------------
 
 
-# --- DATA AUGMENTATION FUNCTIONS (NEW) ---
-def add_gaussian_noise(sequence: np.ndarray, std_dev: float = 0.01) -> np.ndarray:
-    """Add small random Gaussian noise to all landmarks."""
+# --- DATA AUGMENTATION FUNCTIONS (UPDATED FOR ANGLES) ---
+
+def add_gaussian_noise(sequence: np.ndarray, std_dev: float = 0.001) -> np.ndarray:
+    """
+    Adds small random Gaussian noise to the normalized angle features.
+    
+    std_dev is small (0.001) because the features are scaled between 0.0 and 1.0.
+    """
     noise = np.random.normal(0, std_dev, sequence.shape).astype(np.float32)
-    return sequence + noise
+    
+    noisy_sequence = sequence + noise
+    
+    # Clip to ensure augmented angles stay within the normalized [0.0, 1.0] range.
+    return np.clip(noisy_sequence, 0.0, 1.0)
 
 def time_warp(sequence: np.ndarray) -> np.ndarray:
     """Randomly speeds up (dropout) or slows down (interpolation) the sequence."""
     
-    # Sequence shape: (Seq_len, N_Features)
     sequence_len = sequence.shape[0]
     
-    # Decide on speed change (1: no change, <1: speed up, >1: slow down)
     speed_factor = random.choice([
-        1.0, # No change
-        random.uniform(0.8, 0.9),  # Speed up (0.8 to 0.9 of original speed)
-        random.uniform(1.1, 1.2)   # Slow down (1.1 to 1.2 of original speed)
+        1.0, 
+        random.uniform(0.8, 0.9),  
+        random.uniform(1.1, 1.2)
     ])
     
     if speed_factor == 1.0:
@@ -113,12 +157,9 @@ def time_warp(sequence: np.ndarray) -> np.ndarray:
 
     target_len = int(sequence_len / speed_factor)
     
-    # Original time indices
     original_indices = np.linspace(0, sequence_len - 1, sequence_len)
-    # New time indices to sample from the original sequence
     new_indices = np.linspace(0, sequence_len - 1, target_len)
     
-    # Interpolate for each feature
     warped_sequence = np.zeros((target_len, sequence.shape[1]), dtype=np.float32)
     for i in range(sequence.shape[1]):
         warped_sequence[:, i] = np.interp(
@@ -127,10 +168,8 @@ def time_warp(sequence: np.ndarray) -> np.ndarray:
 
     # Pad or truncate back to the expected length
     if warped_sequence.shape[0] > EXPECTED_SEQUENCE_LENGTH:
-        # Truncate
         return warped_sequence[:EXPECTED_SEQUENCE_LENGTH, :]
     elif warped_sequence.shape[0] < EXPECTED_SEQUENCE_LENGTH:
-        # Pad with the last frame
         padding_len = EXPECTED_SEQUENCE_LENGTH - warped_sequence.shape[0]
         padding = np.tile(warped_sequence[-1, :], (padding_len, 1))
         return np.vstack([warped_sequence, padding])
@@ -138,7 +177,7 @@ def time_warp(sequence: np.ndarray) -> np.ndarray:
         return warped_sequence
 
 def random_frame_dropout(sequence: np.ndarray, max_frames: int = 3) -> np.ndarray:
-    """Randomly set 1 to max_frames frames to zeros."""
+    """Randomly set 1 to max_frames frames to zeros (simulating occlusion)."""
     
     num_drop = random.randint(1, max_frames)
     
@@ -146,7 +185,6 @@ def random_frame_dropout(sequence: np.ndarray, max_frames: int = 3) -> np.ndarra
     valid_indices = np.where(np.any(sequence != 0, axis=1))[0]
     
     if len(valid_indices) < num_drop:
-        # If sequence is too short or mostly zeros, don't drop frames
         return sequence
         
     drop_indices = random.sample(valid_indices.tolist(), num_drop)
@@ -154,38 +192,37 @@ def random_frame_dropout(sequence: np.ndarray, max_frames: int = 3) -> np.ndarra
     sequence[drop_indices, :] = 0
     return sequence
 
-def augment_sequences(centered_sequences: List[np.ndarray]) -> List[np.ndarray]:
-    """Applies a suite of augmentations to training sequences."""
-    augmented_sequences = []
+def augment_sequences(angle_sequences: List[np.ndarray], volume_multiplier: int = 2) -> List[np.ndarray]:
+    """Applies augmentation to angle sequences and increases data volume."""
+    newly_augmented_sequences = []
     
-    for seq in centered_sequences:
-        # Seq is (n_sequences, seq_len, n_features)
+    for seq in angle_sequences:
+        # seq shape: (n_samples, seq_len, n_features [14])
+        n_features = seq.shape[2] 
         
         for sample_idx in range(seq.shape[0]):
-            sample = seq[sample_idx] # (seq_len, n_features)
+            original_sample = seq[sample_idx].copy()
             
-            # 1. Gaussian Noise
-            augmented_sample = add_gaussian_noise(sample)
+            for _ in range(volume_multiplier):
+                augmented_sample = original_sample.copy()
+                
+                # Apply pipeline
+                augmented_sample = add_gaussian_noise(augmented_sample)
+                augmented_sample = time_warp(augmented_sample)
+                augmented_sample = random_frame_dropout(augmented_sample)
+                
+                # Dynamic reshape 
+                newly_augmented_sequences.append(
+                    augmented_sample.reshape(1, EXPECTED_SEQUENCE_LENGTH, n_features)
+                )
             
-            # 2. Time Warping
-            augmented_sample = time_warp(augmented_sample)
-            
-            # 3. Random Frame Dropout
-            augmented_sample = random_frame_dropout(augmented_sample)
-            
-            augmented_sequences.append(augmented_sample.reshape(1, EXPECTED_SEQUENCE_LENGTH, EXPECTED_LANDMARKS))
-            
-    # Concatenate all augmented samples into a single list element
-    if augmented_sequences:
-        # Combine into one big array for the train set
-        augmented_train_data = np.concatenate(augmented_sequences, axis=0) 
-        # Return as a list containing the single augmented train array
-        return [augmented_train_data]
+    if newly_augmented_sequences:
+        return [np.concatenate(newly_augmented_sequences, axis=0)]
         
     return []
 
 # --------------------------------------------------
-# (The rest of the utility functions remain the same)
+# (The rest of the utility functions are standard)
 # --------------------------------------------------
 
 def stratified_video_split(
@@ -233,7 +270,7 @@ def stratified_video_split(
 
 
 def validate_sequence_shape(data: np.ndarray, video_path: Path) -> bool:
-    """Validate that loaded sequence has expected shape."""
+    """Validate that loaded sequence has expected shape (99 features)."""
     if data.ndim != 3:
         warnings.warn(f"Unexpected ndim {data.ndim} in {video_path.name}, expected 3D")
         return False
@@ -254,8 +291,6 @@ def validate_sequence_shape(data: np.ndarray, video_path: Path) -> bool:
     
     return True
 
-
-# NOTE: Removed compute_normalization_stats
 
 def load_and_validate_sequences(
     video_paths: List[Path]
@@ -283,9 +318,6 @@ def load_and_validate_sequences(
     return sequences
 
 
-# NOTE: Removed normalize_sequences
-
-
 def process_split(
     video_paths: List[Path],
     exercise_name: str,
@@ -293,39 +325,40 @@ def process_split(
     label: int,
     output_dir: Path
 ) -> Dict[str, any]:
-    """Process a single data split, applying ONLY body-centric normalization."""
+    """Process a single data split, applying ANGLE feature extraction."""
     
     if not video_paths:
         return {"sequences": 0, "samples": 0}
     
-    # Load and validate
+    # 1. Load data (raw landmarks)
     sequences = load_and_validate_sequences(video_paths)
     
     if not sequences:
         warnings.warn(f"No valid sequences for {exercise_name}/{split_name}")
         return {"sequences": 0, "samples": 0}
     
-    # --- Integration: Apply Body-Centric Normalization (Translation) ---
-    centered_sequences = normalize_body_centric(sequences)
+    # 2. CORE CHANGE: Extract Angles (features are now 14)
+    angle_sequences = landmarks_to_angles(sequences)
     
-    # --- AUGMENTATION: Only applied to TRAIN split ---
+    # 3. AUGMENTATION: Only applied to TRAIN split 
     if split_name == "train":
-        initial_sample_count = sum(s.shape[0] for s in centered_sequences)
-        centered_sequences.extend(augment_sequences(centered_sequences))
-        print(f"  ✨ Augmentation: {initial_sample_count} -> {sum(s.shape[0] for s in centered_sequences)} samples")
+        initial_sample_count = sum(s.shape[0] for s in angle_sequences)
+        # Augmentation creates duplicates and adds them to the list
+        angle_sequences.extend(augment_sequences(angle_sequences, volume_multiplier=3))
+        print(f"  ✨ Augmentation: {initial_sample_count} -> {sum(s.shape[0] for s in angle_sequences)} samples")
     
-    # Concatenate all sequences
-    X = np.concatenate(centered_sequences, axis=0)
+    # 4. Concatenate all sequences
+    X = np.concatenate(angle_sequences, axis=0)
     y = np.full(len(X), label, dtype=np.int64)
     
-    # Save
+    # 5. Save
     split_dir = output_dir / exercise_name / split_name
     split_dir.mkdir(parents=True, exist_ok=True)
     
     output_path = split_dir / f"{exercise_name}_{split_name}.npz"
     np.savez_compressed(output_path, features=X, labels=y)
     
-    print(f"  ✅ {split_name:5s}: {X.shape[0]:4d} samples from {len(video_paths)} videos")
+    print(f"  ✅ {split_name:5s}: {X.shape[0]:4d} samples from {len(video_paths)} videos. (Features: {ANGLES_DIM} Angles)")
     
     return {"sequences": len(video_paths), "samples": len(X)}
 
@@ -334,7 +367,7 @@ def main():
     """Main preprocessing pipeline."""
     
     print("=" * 70)
-    print("Exercise Video Preprocessing Pipeline (Body-Centric Only + Augmentation)")
+    print("Exercise Video Preprocessing Pipeline (14 Angle Features + Augmentation)")
     print("=" * 70)
     
     # Validate input directory
@@ -353,7 +386,7 @@ def main():
     
     print(f"\nFound {len(label_names)} exercise classes:")
     for label, name in enumerate(label_names):
-        print(f"  {label}: {name}")
+        print(f"  {label}: {name}")
     
     # Step 1: Split videos
     print(f"\n{'-' * 70}")
@@ -378,20 +411,17 @@ def main():
         }
         
         print(f"\n{ex_dir.name}:")
-        print(f"  Total videos: {len(npy_files)}")
-        print(f"  Train: {len(train_vids)}, Eval: {len(eval_vids)}, Test: {len(test_vids)}")
+        print(f"  Total videos: {len(npy_files)}")
+        print(f"  Train: {len(train_vids)}, Eval: {len(eval_vids)}, Test: {len(test_vids)}")
     
     # Save label map
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     np.save(PROCESSED_DIR / "label_map.npy", np.array(label_names, dtype=object))
     print(f"✅ Label mapping saved to: {PROCESSED_DIR / 'label_map.npy'}")
-
     
-    # NOTE: Removed Step 1.5 (centering train data for stats) and Step 2 (compute stats)
-    
-    # Step 3: Process all splits
+    # Step 2: Process all splits
     print(f"\n{'-' * 70}")
-    print("Step 2: Processing, Body-Centric Normalizing, and Augmenting (Train Only) all splits")
+    print("Step 2: Processing, ANGLE Extraction, and Augmenting (Train Only) all splits")
     print("-" * 70)
     
     total_stats = {
@@ -425,7 +455,7 @@ def main():
     print(f"\nDataset Summary:")
     for split_name in ["train", "eval", "test"]:
         stats = total_stats[split_name]
-        print(f"  {split_name.capitalize():5s}: {stats['samples']:5d} samples from {stats['sequences']:3d} videos")
+        print(f"  {split_name.capitalize():5s}: {stats['samples']:5d} samples from {stats['sequences']:3d} videos")
     
     print(f"\n📁 Processed data saved to: {PROCESSED_DIR}")
     print("=" * 70)
