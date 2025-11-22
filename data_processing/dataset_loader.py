@@ -1,10 +1,17 @@
 import numpy as np
 from pathlib import Path
-from typing import Tuple, Dict, Optional, List
+from typing import Tuple, Dict, Optional, List, Literal
 import warnings
 
 # Configuration
 PROCESSED_DIR = Path("data/processed")
+
+# Feature dimensions
+ANGLES_DIM = 12
+LANDMARKS_DIM = 99  # 33 landmarks × 3 coords
+COMBINED_DIM = ANGLES_DIM + LANDMARKS_DIM  # 111
+
+FeatureMode = Literal["landmarks", "angles", "combined"]
 
 # Global cache for metadata
 _label_map_cache = None
@@ -129,6 +136,38 @@ def encode_label(class_name: str) -> int:
     return label_to_int[class_name]
 
 
+def extract_features(
+    X: np.ndarray,
+    mode: FeatureMode = "combined"
+) -> np.ndarray:
+    """
+    Extract specific features from combined data.
+    
+    Args:
+        X: Combined features array (n_samples, seq_len, 111)
+           Format: [12 angles | 99 landmarks]
+        mode: Feature extraction mode:
+            - "landmarks": Extract only landmarks (99 features)
+            - "angles": Extract only angles (12 features)
+            - "combined": Keep all features (111 features)
+    
+    Returns:
+        Extracted features array
+    """
+    if mode == "combined":
+        return X
+    elif mode == "angles":
+        # Extract first 12 features (angles)
+        return X[:, :, :ANGLES_DIM]
+    elif mode == "landmarks":
+        # Extract last 99 features (landmarks)
+        return X[:, :, ANGLES_DIM:]
+    else:
+        raise ValueError(
+            f"Invalid mode '{mode}'. Must be one of: 'landmarks', 'angles', 'combined'"
+        )
+
+
 def find_split_files(split_name: str) -> List[Path]:
     """
     Find all .npz files for a given split.
@@ -167,15 +206,20 @@ def find_split_files(split_name: str) -> List[Path]:
 
 def load_split(
     split_name: str,
+    mode: FeatureMode = "combined",
     shuffle: bool = True,
     use_cache: bool = True,
     seed: Optional[int] = 42
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Load a data split (train/eval/test).
+    Load a data split (train/eval/test) with feature extraction option.
     
     Args:
         split_name: One of 'train', 'eval', 'test'
+        mode: Feature extraction mode:
+            - "landmarks": Only landmarks (99 features)
+            - "angles": Only angles (12 features)
+            - "combined": Both angles + landmarks (111 features)
         shuffle: Whether to shuffle the data (recommended for training)
         use_cache: Whether to use cached data if available
         seed: Random seed for shuffling (None for no seed)
@@ -193,11 +237,13 @@ def load_split(
             f"Must be one of: {', '.join(valid_splits)}"
         )
     
-    # Check cache
-    cache_key = (split_name, shuffle, seed)
+    # Check cache (cache raw combined data)
+    cache_key = (split_name, "combined", shuffle, seed)
     if use_cache and cache_key in _data_cache:
-        print(f"✅ Loaded {split_name} from cache")
-        return _data_cache[cache_key]
+        X_combined, y = _data_cache[cache_key]
+        X = extract_features(X_combined, mode)
+        print(f"✅ Loaded {split_name} from cache (mode={mode})")
+        return X, y
     
     # Find all files for this split
     npz_files = find_split_files(split_name)
@@ -237,7 +283,7 @@ def load_split(
         raise RuntimeError(f"No valid data loaded for '{split_name}' split")
     
     # Concatenate all data
-    X = np.concatenate(all_X, axis=0).astype(np.float32)
+    X_combined = np.concatenate(all_X, axis=0).astype(np.float32)
     y = np.concatenate(all_y, axis=0).astype(np.int64)
     
     # Shuffle if requested
@@ -247,8 +293,8 @@ def load_split(
         else:
             rng = np.random
         
-        indices = rng.permutation(len(X))
-        X = X[indices]
+        indices = rng.permutation(len(X_combined))
+        X_combined = X_combined[indices]
         y = y[indices]
     
     # Validate labels
@@ -263,13 +309,21 @@ def load_split(
             f"Found labels outside valid range [0, {n_classes-1}]: {unique_labels}"
         )
     
-    # Cache the result
+    # Cache the combined result
     if use_cache:
-        _data_cache[cache_key] = (X, y)
+        _data_cache[cache_key] = (X_combined, y)
+    
+    # Extract requested features
+    X = extract_features(X_combined, mode)
     
     # Print summary
+    feature_info = {
+        "landmarks": f"{LANDMARKS_DIM} landmarks",
+        "angles": f"{ANGLES_DIM} angles",
+        "combined": f"{ANGLES_DIM} angles + {LANDMARKS_DIM} landmarks"
+    }
     print(f"✅ Loaded {split_name}: {X.shape[0]:,} samples, "
-          f"{len(unique_labels)} classes, shape={X.shape}")
+          f"{len(unique_labels)} classes, shape={X.shape} ({feature_info[mode]})")
     
     return X, y
 
@@ -296,8 +350,13 @@ def get_class_distribution(y: np.ndarray) -> Dict[str, int]:
     return distribution
 
 
-def print_dataset_info():
-    """Print comprehensive information about the dataset."""
+def print_dataset_info(mode: FeatureMode = "combined"):
+    """
+    Print comprehensive information about the dataset.
+    
+    Args:
+        mode: Feature extraction mode for displaying data shapes
+    """
     print("=" * 70)
     print("Dataset Information")
     print("=" * 70)
@@ -308,6 +367,15 @@ def print_dataset_info():
         print(f"\n📋 Classes ({len(label_map)}):")
         for idx, name in enumerate(label_map):
             print(f"  {idx}: {name}")
+        
+        # Feature info
+        print(f"\n🔧 Feature Mode: {mode}")
+        if mode == "landmarks":
+            print(f"  Using only landmarks: {LANDMARKS_DIM} features")
+        elif mode == "angles":
+            print(f"  Using only angles: {ANGLES_DIM} features")
+        else:
+            print(f"  Using combined: {ANGLES_DIM} angles + {LANDMARKS_DIM} landmarks = {COMBINED_DIM} features")
         
         # Load normalization stats
         try:
@@ -322,7 +390,7 @@ def print_dataset_info():
         print(f"\n📦 Data Splits:")
         for split_name in ["train", "eval", "test"]:
             try:
-                X, y = load_split(split_name, shuffle=False)
+                X, y = load_split(split_name, mode=mode, shuffle=False)
                 dist = get_class_distribution(y)
                 
                 print(f"\n  {split_name.upper()}:")
@@ -348,31 +416,3 @@ def clear_cache():
     _data_cache.clear()
     print("✅ Cache cleared")
 
-
-# Example usage
-if __name__ == "__main__":
-    print_dataset_info()
-    
-    print("\n" + "=" * 70)
-    print("Loading Training Data")
-    print("=" * 70)
-    
-    # Load training data
-    X_train, y_train = load_split("train", shuffle=True)
-    
-    print(f"\nFeature shape: {X_train.shape}")
-    print(f"Label shape: {y_train.shape}")
-    print(f"Feature dtype: {X_train.dtype}")
-    print(f"Label dtype: {y_train.dtype}")
-    
-    print(f"\nUnique labels: {np.unique(y_train)}")
-    print(f"\nFirst 5 labels: {y_train[:5]}")
-    print(f"Decoded: {[decode_label(int(l)) for l in y_train[:5]]}")
-    
-    # Show class distribution
-    print("\n" + "=" * 70)
-    print("Class Distribution")
-    print("=" * 70)
-    dist = get_class_distribution(y_train)
-    for class_name, count in sorted(dist.items()):
-        print(f"  {class_name:15s}: {count:5,} samples")

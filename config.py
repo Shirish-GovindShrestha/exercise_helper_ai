@@ -4,12 +4,17 @@ from pathlib import Path
 import torch
 
 # ----- shared -----
-INPUT_DIM = 14
+INPUT_FEATURE = "combined"  # "landmarks" or "angles" or "combined"
+INPUT_DIM = (
+    33*3 if INPUT_FEATURE == "landmarks"
+    else 12 if INPUT_FEATURE == "angles"
+    else 33*3 + 12
+)
 
 
 
 # ----- auto-encoder -----
-AE_LATENT_DIM = 8
+AE_LATENT_DIM = 15
 AE_DROPOUT = 0.2
 AE_HIDDEN = 128          # encoder/decoder internal FC size
 AE_BATCH_SIZE = 64
@@ -21,16 +26,16 @@ AE_PATIENCE = 10
 LSTM_HIDDEN_DIM = 128
 LSTM_NUM_LAYERS = 1
 LSTM_BIDIRECTIONAL = True
-LSTM_DROPOUT = 0.4
+LSTM_DROPOUT = 0.5
 LSTM_BATCH_SIZE = 64
 LSTM_EPOCHS = 50
-LSTM_LR = 1e-5
+LSTM_LR = 1e-4
 LSTM_PATIENCE = 15
 ENCODER_LR_RATIO = 0.1
 
 # ----- compute -----
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-USE_AUTOENCODER = True
+USE_AUTOENCODER = False
 FREEZE_ENCODER = False
 
 
@@ -42,5 +47,6 @@ LSTM_BEST = MODEL_DIR / "lstm_classifier_best.pth"
 
 
 
+
 #----Interference----
-EXPECTED_SEQUENCE_LENGTH = 90
+EXPECTED_SEQUENCE_LENGTH = 60

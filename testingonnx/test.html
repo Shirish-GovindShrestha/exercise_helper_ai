@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Exercise Classifier with MediaPipe + ONNX (Seq 90)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <style>
+      #video {
+        transform: scaleX(-1);
+      }
+      #canvas {
+        position: absolute;
+        transform: scaleX(-1);
+        left: 0;
+        top: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Exercise Classifier (Seq 90)</h2>
+    <video id="video" width="640" height="480" autoplay muted></video>
+    <canvas id="canvas" width="640" height="480"></canvas>
+    <pre id="output"></pre>
+
+    <script>
+      const videoElement = document.getElementById("video");
+      const canvasElement = document.getElementById("canvas");
+      const ctx = canvasElement.getContext("2d");
+      const outputElement = document.getElementById("output");
+
+      let session;
+
+      // Sequence buffer
+      const SEQ_LEN = 90;
+      const NUM_ANGLES = 14;
+      let angleBuffer = [];
+
+      // Load ONNX model
+      async function loadModel() {
+        session = await ort.InferenceSession.create("exercise_classifier.onnx");
+        console.log("ONNX model loaded");
+      }
+
+      // Calculate angle between 3 points (in degrees)
+      function angle(p1, p2, p3) {
+        const a = Math.hypot(p2.x - p3.x, p2.y - p3.y);
+        const b = Math.hypot(p1.x - p3.x, p1.y - p3.y);
+        const c = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+        return (
+          Math.acos((b * b + c * c - a * a) / (2 * b * c)) * (180 / Math.PI)
+        );
+      }
+
+      // Compute 14 angles from landmarks
+      function computeAngles(landmarks) {
+        return [
+          angle(landmarks[11], landmarks[13], landmarks[15]),
+          angle(landmarks[12], landmarks[14], landmarks[16]),
+          angle(landmarks[23], landmarks[25], landmarks[27]),
+          angle(landmarks[24], landmarks[26], landmarks[28]),
+          angle(landmarks[11], landmarks[23], landmarks[25]),
+          angle(landmarks[12], landmarks[24], landmarks[26]),
+          angle(landmarks[23], landmarks[11], landmarks[13]),
+          angle(landmarks[24], landmarks[12], landmarks[14]),
+          angle(landmarks[13], landmarks[11], landmarks[23]),
+          angle(landmarks[14], landmarks[12], landmarks[24]),
+          angle(landmarks[15], landmarks[13], landmarks[11]),
+          angle(landmarks[16], landmarks[14], landmarks[12]),
+          angle(landmarks[25], landmarks[23], landmarks[11]),
+          angle(landmarks[26], landmarks[24], landmarks[12]),
+        ];
+      }
+
+      // Run model on buffered sequence
+      async function runModel(seq) {
+        if (!session) return;
+        const flatArray = seq.flat(); // shape [90*14]
+        const inputTensor = new ort.Tensor(
+          "float32",
+          new Float32Array(flatArray),
+          [1, SEQ_LEN, NUM_ANGLES]
+        );
+        const feeds = { input: inputTensor };
+        const results = await session.run(feeds);
+        const output = results.output.data;
+        outputElement.textContent =
+          "Predicted logits: [" +
+          Array.from(output)
+            .map((v) => v.toFixed(3))
+            .join(", ") +
+          "]";
+      }
+
+      // MediaPipe Pose setup
+      const pose = new Pose({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+      });
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        enableSegmentation: false,
+      });
+      pose.onResults(onResults);
+
+      // Webcam
+      const camera = new Camera(videoElement, {
+        onFrame: async () => await pose.send({ image: videoElement }),
+        width: 640,
+        height: 480,
+      });
+      camera.start();
+
+      // Handle results
+      async function onResults(results) {
+        ctx.save();
+        ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        ctx.drawImage(
+          results.image,
+          0,
+          0,
+          canvasElement.width,
+          canvasElement.height
+        );
+
+        if (results.poseLandmarks) {
+          drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {
+            color: "#00FF00",
+            lineWidth: 2,
+          });
+          drawLandmarks(ctx, results.poseLandmarks, {
+            color: "#FF0000",
+            lineWidth: 1,
+          });
+
+          const angles = computeAngles(results.poseLandmarks);
+
+          // Update buffer
+          angleBuffer.push(angles);
+          if (angleBuffer.length > SEQ_LEN) angleBuffer.shift(); // keep last 90 frames
+
+          if (angleBuffer.length === SEQ_LEN) {
+            await runModel(angleBuffer);
+          }
+        }
+
+        ctx.restore();
+      }
+
+      // Load model
+      loadModel();
+    </script>
+  </body>
+</html>

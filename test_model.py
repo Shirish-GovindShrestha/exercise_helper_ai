@@ -3,15 +3,13 @@ import torch
 import numpy as np
 from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
-from dataset.dataset_loader import load_split, get_label_map
+from data_processing.dataset_loader import load_split, get_label_map
 from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 import config
 from models.autoencoder import FrameAutoencoder
 from models.lstm import ExerciseClassifier
-import models.lstm
-
 
 DEVICE = config.DEVICE
 # --- Load label map ---
@@ -23,7 +21,7 @@ else:
     class_names = list(label_map)
 
 # --- Load test data ---
-X_test, y_test = load_split("test")
+X_test, y_test = load_split("test", mode=config.INPUT_FEATURE)
 X_test_t = torch.from_numpy(X_test).float()
 y_test_t = torch.from_numpy(y_test).long()
 test_loader = DataLoader(TensorDataset(X_test_t, y_test_t), batch_size=config.LSTM_BATCH_SIZE, shuffle=False)
@@ -47,6 +45,7 @@ model = ExerciseClassifier(
     num_classes=NUM_CLASSES,
     input_dim=config.INPUT_DIM if not config.USE_AUTOENCODER else config.AE_LATENT_DIM, # raw landmark input dimension
     hidden_dim=config.LSTM_HIDDEN_DIM,
+    lstm_num_layers=config.LSTM_NUM_LAYERS,
     freeze_encoder=config.FREEZE_ENCODER,
     use_autoencoder=config.USE_AUTOENCODER,
     use_bilstm=config.LSTM_BIDIRECTIONAL,

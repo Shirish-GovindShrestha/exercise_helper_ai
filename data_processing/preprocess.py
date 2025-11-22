@@ -9,68 +9,53 @@ RAW_LANDMARKS_DIR = Path("data/landmarks")
 PROCESSED_DIR = Path("data/processed")
 SPLIT_RATIOS = {"train": 0.7, "eval": 0.15, "test": 0.15}
 
-EXPECTED_SEQUENCE_LENGTH = 90
+EXPECTED_SEQUENCE_LENGTH = 75
 NUM_LANDMARKS = 33
 LANDMARK_DIMS = 3
 EXPECTED_LANDMARKS = NUM_LANDMARKS * LANDMARK_DIMS
 
-# --- ANGLES ---
-ANGLES_DIM = 14
+# --- ANGLES (12 angles) ---
+ANGLES_DIM = 12
+TOTAL_FEATURES = ANGLES_DIM + EXPECTED_LANDMARKS  # 12 + 99 = 111
 
 JOINT_CHAINS = [
-    # --- ARMS (6 angles) ---
-    [14, 12, 16],  # Right elbow
-    [12, 11, 14],  # Right shoulder
-    [13, 11, 15],  # Left elbow
-    [11, 12, 13],  # Left shoulder
-    [16, 14, 22],  # Right wrist
-    [15, 13, 21],  # Left wrist
+    # --- ARMS (4 angles) ---
+    [12, 14, 16],  # Right shoulder angle
+    [11, 13, 15],  # Left shoulder angle
+    [14, 12, 16],  # Right elbow angle
+    [13, 11, 15],  # Left elbow angle
 
     # --- LEGS (6 angles) ---
-    [26, 24, 28],  # Right knee
-    [24, 23, 26],  # Right hip
-    [25, 23, 27],  # Left knee
-    [23, 24, 25],  # Left hip
-    [28, 26, 32],  # Right ankle
-    [27, 25, 31],  # Left ankle
+    [24, 23, 26],  # Right hip angle
+    [23, 24, 25],  # Left hip angle
+    [26, 24, 28],  # Right knee angle
+    [25, 23, 27],  # Left knee angle
+    [28, 26, 32],  # Right ankle angle
+    [27, 25, 31],  # Left ankle angle
 
     # --- TORSO (2 angles) ---
-    [12, 24, 11],  # Torso bend right/left
-    [11, 23, 12],  # Torso rotation
+    [12, 24, 26],  # Torso inclination (right side)
+    [11, 23, 12],  # Spine/neck alignment
 ]
 
-np.random.seed(1)
-random.seed(1)
+np.random.seed(42)
+random.seed(42)
 
 # -----------------------------
 #   FAST ANGLE CALCULATION
 # -----------------------------
 
-def vector_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """Angle at joint b with vectors ba and bc."""
-    ba = a - b
-    bc = c - b
-
-    # Normalize
-    ba_n = ba / (np.linalg.norm(ba) + 1e-6)
-    bc_n = bc / (np.linalg.norm(bc) + 1e-6)
-
-    cosine = np.dot(ba_n, bc_n)
-    cosine = np.clip(cosine, -1.0, 1.0)
-
-    return np.degrees(np.arccos(cosine))
-
-
-def landmarks_to_angles(sequences: List[np.ndarray]) -> List[np.ndarray]:
-    """Convert landmarks -> 14 angles per frame, vectorized."""
-    angle_sequences = []
+def landmarks_to_angles_and_landmarks(sequences: List[np.ndarray]) -> List[np.ndarray]:
+    """Convert landmarks -> 12 angles + 99 landmarks per frame."""
+    combined_sequences = []
 
     for seq in sequences:
-        # (N, T, 33, 3)
+        # (N, T, 99) -> (N, T, 33, 3)
         seq_reshaped = seq.reshape(seq.shape[0], seq.shape[1], NUM_LANDMARKS, 3)
 
-        # Pre-create empty angle array
+        # Pre-create arrays
         angles = np.zeros((seq.shape[0], seq.shape[1], ANGLES_DIM), dtype=np.float32)
+        landmarks_flat = seq  # Keep original (N, T, 99)
 
         for sample_idx in range(seq.shape[0]):
             sample = seq_reshaped[sample_idx]
@@ -78,7 +63,7 @@ def landmarks_to_angles(sequences: List[np.ndarray]) -> List[np.ndarray]:
             # Detect padding frames
             zero_mask = np.all(sample == 0, axis=(1, 2))
 
-            for chain_idx, (mid, a, c) in enumerate(JOINT_CHAINS):
+            for chain_idx, (a, mid, c) in enumerate(JOINT_CHAINS):
                 A = sample[:, a]
                 B = sample[:, mid]
                 C = sample[:, c]
@@ -98,9 +83,11 @@ def landmarks_to_angles(sequences: List[np.ndarray]) -> List[np.ndarray]:
             # Restore padding frames to zeros
             angles[sample_idx][zero_mask] = 0
 
-        angle_sequences.append(angles)
+        # Combine: [angles (12) | landmarks (99)] = 111 features
+        combined = np.concatenate([angles, landmarks_flat], axis=2)
+        combined_sequences.append(combined)
 
-    return angle_sequences
+    return combined_sequences
 
 # -----------------------------
 #       DATA AUGMENTATION
@@ -147,10 +134,10 @@ def random_frame_dropout(sequence: np.ndarray, max_frames: int = 3) -> np.ndarra
     return sequence
 
 
-def augment_sequences(angle_sequences: List[np.ndarray], volume_multiplier: int = 2) -> List[np.ndarray]:
+def augment_sequences(combined_sequences: List[np.ndarray], volume_multiplier: int = 2) -> List[np.ndarray]:
     augmented = []
 
-    for seq in angle_sequences:
+    for seq in combined_sequences:
         n_samples = seq.shape[0]
 
         for i in range(n_samples):
@@ -162,7 +149,7 @@ def augment_sequences(angle_sequences: List[np.ndarray], volume_multiplier: int 
                 s = time_warp(s)
                 s = random_frame_dropout(s)
 
-                augmented.append(s.reshape(1, EXPECTED_SEQUENCE_LENGTH, ANGLES_DIM))
+                augmented.append(s.reshape(1, EXPECTED_SEQUENCE_LENGTH, TOTAL_FEATURES))
 
     return [np.concatenate(augmented, axis=0)] if augmented else []
 
@@ -231,22 +218,22 @@ def process_split(video_paths, name, split, label, outdir):
     if not sequences:
         return {"sequences": 0, "samples": 0}
 
-    angle_sequences = landmarks_to_angles(sequences)
+    combined_sequences = landmarks_to_angles_and_landmarks(sequences)
 
     if split == "train":
-        before = sum(s.shape[0] for s in angle_sequences)
-        angle_sequences.extend(augment_sequences(angle_sequences, volume_multiplier=2))
-        after = sum(s.shape[0] for s in angle_sequences)
+        before = sum(s.shape[0] for s in combined_sequences)
+        combined_sequences.extend(augment_sequences(combined_sequences, volume_multiplier=2))
+        after = sum(s.shape[0] for s in combined_sequences)
         print(f"✨ Augmentation {before} → {after}")
 
-    X = np.concatenate(angle_sequences, axis=0)
+    X = np.concatenate(combined_sequences, axis=0)
     y = np.full(X.shape[0], label, dtype=np.int64)
 
     save_dir = outdir / name / split
     save_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(save_dir / f"{name}_{split}.npz", features=X, labels=y)
 
-    print(f"  {split}: {X.shape[0]} samples ({ANGLES_DIM} features)")
+    print(f"  {split}: {X.shape[0]} samples ({TOTAL_FEATURES} features: 12 angles + 99 landmarks)")
     return {"sequences": len(video_paths), "samples": len(X)}
 
 
@@ -256,7 +243,7 @@ def process_split(video_paths, name, split, label, outdir):
 
 def main():
     print("=" * 70)
-    print("Preprocessing Pipeline (14 Angles + Augmentation)")
+    print("Preprocessing Pipeline (12 Angles + 99 Landmarks = 111 Features)")
     print("=" * 70)
 
     if not RAW_LANDMARKS_DIR.exists():
@@ -299,6 +286,10 @@ def main():
     for s in ["train", "eval", "test"]:
         print(f"  {s}: {totals[s]['samples']} samples")
 
+    print("\nFeature breakdown:")
+    print(f"  - Angles: {ANGLES_DIM}")
+    print(f"  - Landmarks: {EXPECTED_LANDMARKS}")
+    print(f"  - Total: {TOTAL_FEATURES}")
     print("\nSaved to:", PROCESSED_DIR)
 
 

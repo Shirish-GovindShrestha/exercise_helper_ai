@@ -9,10 +9,10 @@ from typing import Tuple, List
 # Configuration
 RAW_VIDEO_DIR = Path("data/raw_videos")
 LANDMARK_DIR = Path("data/landmarks")
-SEQUENCE_LENGTH = 90
-STEP = 1
+SEQUENCE_LENGTH = 75
+STEP = 5
 # Optimization: Prevent CPU thrashing. MediaPipe is heavy.
-NUM_JOBS = max(1, (os.cpu_count() or 2) // 2) 
+NUM_JOBS = max(1, (os.cpu_count() or 2)) 
 NUM_LANDMARKS = 33
 LANDMARK_DIMS = 3
 

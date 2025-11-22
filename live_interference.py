@@ -3,254 +3,254 @@ import torch
 import numpy as np
 import cv2
 from collections import deque, Counter
-from pathlib import Path
-
 import mediapipe as mp
 
 # --- Local Modules ---
-from models.autoencoder import FrameAutoencoder
 from models.lstm import ExerciseClassifier
-from dataset.dataset_loader import get_label_map
 import config
+from data_processing.dataset_loader import get_label_map
 
-# --- Constants & Config ---
-CONF_THRESHOLD = 0.6 
-NORM_STATS_PATH = Path("data/processed/normalization_stats.npz")
+# --- Constants ---
 DEVICE = config.DEVICE
+BUFFER_SIZE = 30  # reduced from 60 for faster response
+EMA_ALPHA = 0.8  # increased for faster adaptation
+HISTORY_LEN = 3  # reduced from 5 for faster voting
+CONF_THRESHOLD = 0.55  # slightly lower for faster detection
+SKIP_FRAMES = 2  # process every nth frame
 
-# --- NEW: Landmark Constants for Centering ---
-# MediaPipe landmark indices (0-32)
-LH_IDX, RH_IDX = 23, 24 # Left Hip, Right Hip
-LS_IDX, RS_IDX = 11, 12 # Left Shoulder, Right Shoulder
-LANDMARK_DIMS = 3 # x, y, z
-
-# --- Prediction Parameters ---
-BUFFER_SIZE = config.EXPECTED_SEQUENCE_LENGTH
-EMA_ALPHA = 0.7      # High alpha = faster visual reaction
-HISTORY_LEN = 5      # "Voting" window size (prevents flickering)
-
-
-# --- 1. Load Data & Models (Cached) ---
+# Feature mode from config
+INPUT_FEATURE = config.INPUT_FEATURE  # "landmarks", "angles", or "combined"
 
 @st.cache_resource
 def load_resources():
-    """Loads normalization stats and label map once."""
-    # Load Stats
-    norm_data = np.load(NORM_STATS_PATH)
-    mean = norm_data["mean"].astype(np.float32)
-    std = norm_data["std"].astype(np.float32)
-    
     # Load Labels
     label_map = get_label_map()
     class_names = list(label_map) if not isinstance(label_map, dict) else list(label_map.keys())
     num_classes = len(class_names)
     
-    return mean, std, class_names, num_classes
+    return num_classes, class_names
 
+NUM_CLASSES, CLASS_NAMES = load_resources()
 
+# --- Feature Dimensions ---
+LANDMARKS_DIM = 99  # 33 landmarks × 3
+ANGLES_DIM = 12
+
+if INPUT_FEATURE == "landmarks":
+    INPUT_DIM = LANDMARKS_DIM
+elif INPUT_FEATURE == "angles":
+    INPUT_DIM = ANGLES_DIM
+elif INPUT_FEATURE == "combined":
+    INPUT_DIM = ANGLES_DIM + LANDMARKS_DIM
+else:
+    raise ValueError(f"Invalid INPUT_FEATURE: {INPUT_FEATURE}")
+
+# --- Angles Definition (12 angles) ---
+JOINT_CHAINS = [
+    # --- ARMS (4 angles) ---
+    [12, 14, 16],  # Right shoulder
+    [11, 13, 15],  # Left shoulder
+    [14, 12, 16],  # Right elbow
+    [13, 11, 15],  # Left elbow
+
+    # --- LEGS (6 angles) ---
+    [24, 23, 26],  # Right hip
+    [23, 24, 25],  # Left hip
+    [26, 24, 28],  # Right knee
+    [25, 23, 27],  # Left knee
+    [28, 26, 32],  # Right ankle
+    [27, 25, 31],  # Left ankle
+
+    # --- TORSO (2 angles) ---
+    [12, 24, 26],  # Torso inclination
+    [11, 23, 12],  # Spine alignment
+]
+
+# --- Helper Functions ---
+def vector_angle(a, b, c):
+    """Calculate angle at point b formed by points a-b-c."""
+    ba = a - b
+    bc = c - b
+    ba_n = ba / (np.linalg.norm(ba) + 1e-6)
+    bc_n = bc / (np.linalg.norm(bc) + 1e-6)
+    cosine = np.clip(np.dot(ba_n, bc_n), -1.0, 1.0)
+    return np.degrees(np.arccos(cosine)) / 180.0  # normalize 0-1
+
+def landmarks_to_angles(landmarks):
+    """Convert 33 landmarks (Nx3) -> 12 angles."""
+    angles = []
+    for a, mid, c in JOINT_CHAINS:
+        A, B, C = landmarks[a], landmarks[mid], landmarks[c]
+        angles.append(vector_angle(A, B, C))
+    return np.array(angles, dtype=np.float32)
+
+def extract_features(landmarks):
+    """
+    Extract features based on INPUT_FEATURE mode.
+    
+    Args:
+        landmarks: (33, 3) array of pose landmarks
+        
+    Returns:
+        Feature array based on mode:
+        - "landmarks": (99,) flattened landmarks
+        - "angles": (12,) joint angles
+        - "combined": (111,) angles + landmarks
+    """
+    if INPUT_FEATURE == "landmarks":
+        return landmarks.flatten()  # (99,)
+    
+    elif INPUT_FEATURE == "angles":
+        return landmarks_to_angles(landmarks)  # (12,)
+    
+    elif INPUT_FEATURE == "combined":
+        angles = landmarks_to_angles(landmarks)  # (12,)
+        landmarks_flat = landmarks.flatten()  # (99,)
+        return np.concatenate([angles, landmarks_flat])  # (111,)
+    
+    else:
+        raise ValueError(f"Invalid INPUT_FEATURE: {INPUT_FEATURE}")
+
+# --- Load Model ---
 @st.cache_resource
-def load_models(num_classes):
-    """Loads PyTorch models once and keeps them in memory."""
-    # Load Autoencoder
-    ae = FrameAutoencoder(
-        input_dim=config.INPUT_DIM,
-        latent_dim=config.AE_LATENT_DIM,
-        dropout=config.AE_DROPOUT
-    ).to(DEVICE)
-    ae.eval()
-
-    # Load Classifier
-    lstm_model = ExerciseClassifier(
-        autoencoder=ae,
-        num_classes=num_classes,
-        input_dim=config.INPUT_DIM if not config.USE_AUTOENCODER else config.AE_LATENT_DIM,
+def load_model():
+    model = ExerciseClassifier(
+        autoencoder=None,
+        num_classes=NUM_CLASSES,
+        input_dim=INPUT_DIM,
         hidden_dim=config.LSTM_HIDDEN_DIM,
-        freeze_encoder=config.FREEZE_ENCODER,
-        use_autoencoder=config.USE_AUTOENCODER,
+        freeze_encoder=False,
+        use_autoencoder=False,
         use_bilstm=config.LSTM_BIDIRECTIONAL,
         dropout=config.LSTM_DROPOUT
     ).to(DEVICE)
-    
-    # Load Weights
-    checkpoint = torch.load(config.LSTM_BEST, map_location=DEVICE, weights_only=False)
-    lstm_model.load_state_dict(checkpoint['model_state_dict'])
-    lstm_model.eval()
-    
-    return ae, lstm_model
+    checkpoint = torch.load(config.LSTM_BEST, map_location=DEVICE)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    return model
 
-# --- Initialize Resources ---
-mean, std, class_names, NUM_CLASSES = load_resources()
-autoencoder, model = load_models(NUM_CLASSES)
+model = load_model()
 
 # --- Streamlit UI ---
-st.title("Live Exercise Classifier")
-st.markdown("Webcam feed with **Instant Reaction** & **Anti-Flicker** technology.")
+st.title(f"Live Exercise Classifier ({INPUT_FEATURE.title()})")
+st.caption(f"Using {INPUT_DIM} features: {INPUT_FEATURE}")
 
 run = st.checkbox("Start Camera", value=False)
+camera_placeholder = st.empty()
+prediction_placeholder = st.empty()
+stats_placeholder = st.empty()
 
-# Layout containers
-col1, col2 = st.columns([3, 2])
-with col1:
-    camera_placeholder = st.empty()
-with col2:
-    prediction_placeholder = st.empty()
-    stats_placeholder = st.empty()
-
-# --- Mediapipe Pose Setup ---
+# --- Mediapipe ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 pose = mp_pose.Pose(
     static_image_mode=False,
-    model_complexity=1,
-    enable_segmentation=False,
-    min_detection_confidence=0.5
+    model_complexity=0,  # reduced from 1 for faster inference
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
 )
 
-# --- State Variables ---
+# --- State ---
 frame_buffer = deque(maxlen=BUFFER_SIZE)
-prediction_history = deque(maxlen=HISTORY_LEN) # Stores last N class indices for voting
-ema_probs = None  # For visual smoothing of confidence numbers
+prediction_history = deque(maxlen=HISTORY_LEN)
+ema_probs = None
+frame_count = 0  # for frame skipping
 
 # --- Main Loop ---
-cap = cv2.VideoCapture(0)
-
-# Warmup camera feed to discard stale frames (helps prevent 98% stall)
-for _ in range(5):
-    cap.read() 
-
-while run:
-    ret, frame = cap.read()
-    if not ret:
-        st.warning("No camera input detected.")
-        break
-
-    # Flip & Convert
-    frame = cv2.flip(frame, 1)
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Pose Processing
-    results = pose.process(frame_rgb)
+if run:
+    cap = cv2.VideoCapture(0)
     
-    current_status = "Waiting for person..."
+    # Warmup camera
+    for _ in range(5):
+        cap.read()
     
-    if results.pose_landmarks:
-        # Draw Skeleton
-        mp_drawing.draw_landmarks(
-            frame_rgb,
-            results.pose_landmarks,
-            mp_pose.POSE_CONNECTIONS,
-            mp_drawing.DrawingSpec(color=(0,255,0), thickness=2, circle_radius=2),
-            mp_drawing.DrawingSpec(color=(0,0,255), thickness=2)
-        )
-
-        # --- NEW: Extract and Apply Body-Centric Normalization ---
-        # 1. Extract raw landmarks (33, 3)
-        landmarks_raw = np.array([[lm.x, lm.y, lm.z] for lm in results.pose_landmarks.landmark], dtype=np.float32)
-        
-        # 2. Find Anchor Point (Translation)
-        lh_coords, rh_coords = landmarks_raw[LH_IDX, :], landmarks_raw[RH_IDX, :]
-        ls_coords, rs_coords = landmarks_raw[LS_IDX, :], landmarks_raw[RS_IDX, :]
-        
-        # Use Mid-Hip primary, Mid-Shoulder fallback
-        if not np.all(lh_coords == 0) and not np.all(rh_coords == 0):
-            center_point = (lh_coords + rh_coords) / 2
-        elif not np.all(ls_coords == 0) and not np.all(rs_coords == 0):
-            center_point = (ls_coords + rs_coords) / 2
-        else:
-            center_point = np.zeros(LANDMARK_DIMS, dtype=np.float32) # Fallback to origin
-        
-        # 3. Translation
-        landmarks_centered = landmarks_raw - center_point
-        
-        # 4. Scaling (Body Size Normalization)
-        # Use shoulder distance for live scaling
-        current_shoulder_dist = np.linalg.norm(ls_coords - rs_coords)
-        scale_divisor = current_shoulder_dist if current_shoulder_dist > 1e-6 else 1.0
-        
-        landmarks_scaled = landmarks_centered / scale_divisor
-        
-        # 5. Flatten and Z-Score Standardization
-        landmarks_flat = landmarks_scaled.flatten()
-        landmarks_final = (landmarks_flat - mean) / std
-        
-        frame_buffer.append(landmarks_final)
-        # --- END: Body-Centric Normalization ---
-
-
-        # --- Prediction Logic ---
-        if len(frame_buffer) == BUFFER_SIZE:
-            # Prepare Input
-            seq_input = np.array(frame_buffer)[None, :, :]  # (1, seq_len, input_dim)
-            seq_tensor = torch.from_numpy(seq_input).float().to(DEVICE)
-
-            with torch.no_grad():
-                logits = model(seq_tensor)
-                current_probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-
-            # 1. Visual Smoothing (EMA)
-            if ema_probs is None:
-                ema_probs = current_probs
-            else:
-                ema_probs = EMA_ALPHA * current_probs + (1 - EMA_ALPHA) * ema_probs
-
-            # 2. Decision Stability (Voting)
-            candidate_idx = np.argmax(ema_probs)
-            prediction_history.append(candidate_idx)
+    try:
+        while run:
+            ret, frame = cap.read()
+            if not ret:
+                st.warning("No camera detected.")
+                break
             
-            # Get most common class in recent history
-            count = Counter(prediction_history)
-            most_common_idx, frequency = count.most_common(1)[0]
+            frame_count += 1
             
-            # Only switch label if 3 out of 5 frames agree
-            if frequency >= 3:
-                final_pred_idx = most_common_idx
-            else:
-                final_pred_idx = candidate_idx 
-
-            confidence = ema_probs[final_pred_idx]
-
-            # 3. Display Logic
-            if confidence < CONF_THRESHOLD:
-                current_status = "Unknown / Idle"
-                color = "gray"
-            else:
-                pred_name = class_names[final_pred_idx]
-                color = "green" if confidence > 0.85 else "orange"
-                
-                prediction_placeholder.markdown(
-                    f"""
-                    ### Prediction:
-                    # :{color}[{pred_name}]
-                    **Confidence:** {confidence*100:.1f}%
-                    """
+            # Skip frames for faster processing
+            if frame_count % SKIP_FRAMES != 0:
+                camera_placeholder.image(cv2.cvtColor(cv2.flip(frame, 1), cv2.COLOR_BGR2RGB), 
+                                        channels="RGB", use_container_width=True)
+                continue
+            
+            frame = cv2.flip(frame, 1)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(frame_rgb)
+            
+            if results.pose_landmarks:
+                # Draw skeleton
+                mp_drawing.draw_landmarks(
+                    frame_rgb,
+                    results.pose_landmarks,
+                    mp_pose.POSE_CONNECTIONS
                 )
+
+                # Extract landmarks (33, 3)
+                landmarks = np.array([
+                    [lm.x, lm.y, lm.z]
+                    for lm in results.pose_landmarks.landmark
+                ], dtype=np.float32)
                 
-                # Optional: Show stats for top 3 classes
-                top3_indices = np.argsort(ema_probs)[::-1][:3]
-                stats_text = "**Top Probabilities:**\n\n"
-                for idx in top3_indices:
-                    stats_text += f"- {class_names[idx]}: {ema_probs[idx]*100:.1f}%\n"
-                stats_placeholder.markdown(stats_text)
+                # Extract features based on mode
+                features = extract_features(landmarks)
+                frame_buffer.append(features)
 
-        else:
-            # Buffer Filling (Warmup)
-            fill_percent = int((len(frame_buffer) / BUFFER_SIZE) * 100)
-            prediction_placeholder.markdown(
-                f"""
-                ### Status: 🟡 Calibrating...
-                Gathering motion data: **{fill_percent}%**
-                """
-            )
-            stats_placeholder.empty()
+                # Predict when buffer is full
+                if len(frame_buffer) == BUFFER_SIZE:
+                    seq_input = np.array(frame_buffer)[None, :, :]  # (1, seq_len, input_dim)
+                    seq_tensor = torch.from_numpy(seq_input).float().to(DEVICE)
+                    
+                    with torch.no_grad():
+                        logits = model(seq_tensor)
+                        current_probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
 
-    else:
-        # No person detected
-        prediction_placeholder.markdown("### Status: 🔴 No Person Detected")
-        stats_placeholder.empty()
-        # Clear buffer when person leaves to prevent 98% stall
-        frame_buffer.clear() 
+                    # EMA smoothing
+                    if ema_probs is None:
+                        ema_probs = current_probs
+                    else:
+                        ema_probs = EMA_ALPHA * current_probs + (1 - EMA_ALPHA) * ema_probs
 
-    camera_placeholder.image(frame_rgb, channels="RGB")
+                    # Voting mechanism (faster with reduced history)
+                    candidate_idx = np.argmax(ema_probs)
+                    prediction_history.append(candidate_idx)
+                    most_common_idx, freq = Counter(prediction_history).most_common(1)[0]
+                    final_idx = most_common_idx if freq >= 2 else candidate_idx  # reduced threshold
+                    confidence = ema_probs[final_idx]
 
-cap.release()
-st.write("Camera stopped.")
+                    # Display prediction
+                    if confidence < CONF_THRESHOLD:
+                        prediction_placeholder.markdown("### Status: Unknown / Idle")
+                        stats_placeholder.text(f"Max confidence: {confidence*100:.1f}%")
+                    else:
+                        pred_name = CLASS_NAMES[final_idx]
+                        prediction_placeholder.markdown(
+                            f"### Prediction: **{pred_name}** ({confidence*100:.1f}%)"
+                        )
+                        
+                        # Show top 3 predictions
+                        top3_idx = np.argsort(ema_probs)[-3:][::-1]
+                        stats_text = "Top 3:\n"
+                        for idx in top3_idx:
+                            stats_text += f"  {CLASS_NAMES[idx]}: {ema_probs[idx]*100:.1f}%\n"
+                        stats_placeholder.text(stats_text)
+
+            else:
+                frame_buffer.clear()
+                ema_probs = None
+                prediction_placeholder.markdown("### Status: No Person Detected")
+                stats_placeholder.text("")
+            
+            # Display camera feed
+            camera_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+    
+    finally:
+        cap.release()
+        st.write("Camera stopped.")
+else:
+    st.info("👆 Check the box above to start the camera")

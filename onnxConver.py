@@ -1,7 +1,7 @@
 import torch
 from models.lstm import ExerciseClassifier
 from models.autoencoder import FrameAutoencoder
-from dataset.dataset_loader import load_split, get_label_map
+from data_processing.dataset_loader import load_split, get_label_map
 import config
 
 DEVICE = "cpu"
@@ -42,8 +42,7 @@ torch.onnx.export(
     "exercise_classifier.onnx",
     input_names=["input"],
     output_names=["output"],
-    dynamic_axes={
-        "input": {0: "batch_size", 1: "seq_len"},  # make batch_size and seq_len dynamic
-        "output": {0: "batch_size"}
-    },
+    dynamic_axes={"input": {1: "seq_len"}, "output": {0: "batch_size"}},
+    opset_version=17,
+    verbose=True
 )

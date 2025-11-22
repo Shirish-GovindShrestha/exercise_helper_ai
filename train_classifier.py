@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
-from dataset.dataset_loader import load_split, get_label_map
+from data_processing.dataset_loader import load_split, get_label_map
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, classification_report
 from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
@@ -22,8 +22,8 @@ print("📦 Loading data...")
 label_map = get_label_map()
 NUM_CLASSES = len(label_map)
 
-X_train, y_train = load_split("train")
-X_eval, y_eval = load_split("eval")
+X_train, y_train = load_split("train", mode=config.INPUT_FEATURE)
+X_eval, y_eval = load_split("eval", mode=config.INPUT_FEATURE)
 
 X_train_t = torch.from_numpy(X_train).float()
 y_train_t = torch.from_numpy(y_train).long()
@@ -85,6 +85,7 @@ model = ExerciseClassifier(
     num_classes=NUM_CLASSES,
     input_dim=config.INPUT_DIM if not config.USE_AUTOENCODER else config.AE_LATENT_DIM, # raw landmark input dimension
     hidden_dim=config.LSTM_HIDDEN_DIM,
+    lstm_num_layers=config.LSTM_NUM_LAYERS,
     freeze_encoder=config.FREEZE_ENCODER,
     use_autoencoder=config.USE_AUTOENCODER,
     use_bilstm=config.LSTM_BIDIRECTIONAL,
@@ -261,6 +262,8 @@ torch.save({
         'input_dim': config.INPUT_DIM,
         'latent_dim': config.AE_LATENT_DIM,
         'hidden_dim': config.LSTM_HIDDEN_DIM,
+        'lstm_num_layers': config.LSTM_NUM_LAYERS,
+        'use_bilstm': config.LSTM_BIDIRECTIONAL,
         'dropout': config.LSTM_DROPOUT,
         'batch_size': config.LSTM_BATCH_SIZE,
         'lr': config.LSTM_LR,

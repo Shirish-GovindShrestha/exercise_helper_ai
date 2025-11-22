@@ -8,6 +8,7 @@ class ExerciseClassifier(nn.Module):
         num_classes=5,
         input_dim=33*3,
         hidden_dim=128,
+        lstm_num_layers=1,
         freeze_encoder=True,
         use_autoencoder=True,
         use_bilstm=False,
@@ -29,10 +30,10 @@ class ExerciseClassifier(nn.Module):
             self.encoder = None
 
         # --- LSTM for temporal modeling ---
-        self.lstm = nn.LSTM(
+        self.lstm = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_dim,
-            num_layers=1,
+            num_layers=lstm_num_layers,
             batch_first=True,
             bidirectional=use_bilstm
         )
@@ -59,9 +60,9 @@ class ExerciseClassifier(nn.Module):
             
 
         # --- LSTM ---
-        lstm_out, (h_n, c_n) = self.lstm(z_seq)
+        #lstm_out, (h_n, c_n) = self.lstm(z_seq)
 
-        #lstm_out, h_n, = self.lstm(z_seq)
+        lstm_out, h_n, = self.lstm(z_seq)
 
         # --- Last hidden state ---
         if self.use_bilstm:

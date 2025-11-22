@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import time
-from dataset.dataset_loader import load_split
+from data_processing.dataset_loader import load_split
 from models.autoencoder import FrameAutoencoder
 from models.early_stopping import EarlyStopping
 import config
@@ -13,8 +13,8 @@ print("\n" + "="*70)
 print("Loading data...")
 print("="*70)
 
-X_train, _ = load_split("train")
-X_eval, _ = load_split("eval")
+X_train, _ = load_split("train", mode=config.INPUT_FEATURE)
+X_eval, _ = load_split("eval", mode=config.INPUT_FEATURE)
 
 print(f"Train samples: {len(X_train):,}")
 print(f"Eval samples: {len(X_eval):,}")
