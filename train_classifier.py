@@ -12,6 +12,7 @@ from models.early_stopping import EarlyStopping
 from models.autoencoder import FrameAutoencoder as UnifiedAutoencoder
 from models.lstm import ExerciseClassifier
 import config
+from sklearn.decomposition import PCA
 
 
 DEVICE = config.DEVICE
@@ -25,10 +26,37 @@ NUM_CLASSES = len(label_map)
 X_train, y_train = load_split("train", mode=config.INPUT_FEATURE)
 X_eval, y_eval = load_split("eval", mode=config.INPUT_FEATURE)
 
+'''N, T, F = X_train.shape
+X_train_2d = X_train.reshape(N*T, F)
+
+# Fit PCA
+pca = PCA(n_components=config.INPUT_DIM)   # Use 9 because you found optimal
+X_train_pca_2d = pca.fit_transform(X_train_2d)
+
+# Transform eval
+M = X_eval.shape[0]
+X_eval_pca_2d = pca.transform(X_eval.reshape(M*T, F))
+
+
+# Reshape back to (N, T, 9)
+X_train_pca = X_train_pca_2d.reshape(N, T, config.INPUT_DIM)
+X_eval_pca = X_eval_pca_2d.reshape(M, T, config.INPUT_DIM)
+
+import joblib
+joblib.dump(pca, "pca_model.joblib")
+
+
+
+
+
+print("PCA shapes:", X_train_pca.shape, X_eval_pca.shape)'''
+
 X_train_t = torch.from_numpy(X_train).float()
 y_train_t = torch.from_numpy(y_train).long()
 X_eval_t = torch.from_numpy(X_eval).float()
 y_eval_t = torch.from_numpy(y_eval).long()
+
+
 
 train_loader = DataLoader(
     TensorDataset(X_train_t, y_train_t),

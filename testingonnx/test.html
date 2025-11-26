@@ -2,120 +2,759 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Exercise Classifier with MediaPipe + ONNX (Seq 90)</title>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Exercise Classifier - ONNX</title>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1620248257/drawing_utils.js"></script>
     <style>
-      #video {
-        transform: scaleX(-1);
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
       }
-      #canvas {
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 20px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        overflow: hidden;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 30px;
+        text-align: center;
+      }
+
+      .header h1 {
+        font-size: 2.5em;
+        margin-bottom: 10px;
+      }
+
+      .header p {
+        opacity: 0.9;
+        font-size: 1.1em;
+      }
+
+      .main-content {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 20px;
+        padding: 20px;
+      }
+
+      .video-section {
+        position: relative;
+      }
+
+      .video-container {
+        position: relative;
+        background: #000;
+        border-radius: 15px;
+        overflow: hidden;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+      }
+
+      #videoElement {
+        display: none;
+      }
+
+      #canvasElement {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .overlay-info {
         position: absolute;
-        transform: scaleX(-1);
-        left: 0;
-        top: 0;
+        top: 20px;
+        left: 20px;
+        right: 20px;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 20px;
+        border-radius: 10px;
+        color: white;
+      }
+
+      .prediction-text {
+        font-size: 2em;
+        font-weight: bold;
+        margin-bottom: 10px;
+      }
+
+      .confidence-bar-container {
+        background: rgba(255, 255, 255, 0.2);
+        height: 20px;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-top: 10px;
+      }
+
+      .confidence-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #4caf50, #8bc34a);
+        transition: width 0.3s ease;
+        border-radius: 10px;
+      }
+
+      .confidence-text {
+        text-align: right;
+        margin-top: 5px;
+        font-size: 0.9em;
+      }
+
+      .status-badge {
+        display: inline-block;
+        padding: 5px 15px;
+        border-radius: 20px;
+        font-size: 0.9em;
+        margin-top: 10px;
+      }
+
+      .status-loading {
+        background: #ff9800;
+      }
+
+      .status-ready {
+        background: #4caf50;
+      }
+
+      .status-buffering {
+        background: #2196f3;
+      }
+
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .card {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 15px;
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+      }
+
+      .card h3 {
+        margin-bottom: 15px;
+        color: #667eea;
+        font-size: 1.3em;
+      }
+
+      .controls {
+        display: flex;
+        gap: 10px;
+      }
+
+      .btn {
+        flex: 1;
+        padding: 15px;
+        border: none;
+        border-radius: 10px;
+        font-size: 1em;
+        font-weight: bold;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+
+      .btn-start {
+        background: #4caf50;
+        color: white;
+      }
+
+      .btn-start:hover {
+        background: #45a049;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+      }
+
+      .btn-stop {
+        background: #f44336;
+        color: white;
+      }
+
+      .btn-stop:hover {
+        background: #da190b;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+      }
+
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .probability-chart {
+        margin-top: 15px;
+      }
+
+      .prob-item {
+        margin-bottom: 10px;
+      }
+
+      .prob-label {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 5px;
+        font-size: 0.9em;
+      }
+
+      .prob-bar-container {
+        background: #e0e0e0;
+        height: 25px;
+        border-radius: 5px;
+        overflow: hidden;
+      }
+
+      .prob-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        transition: width 0.3s ease;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-right: 8px;
+        color: white;
+        font-size: 0.8em;
+        font-weight: bold;
+      }
+
+      .settings-group {
+        margin-bottom: 15px;
+      }
+
+      .settings-group label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 500;
+        color: #333;
+      }
+
+      .settings-group input[type="range"] {
+        width: 100%;
+        height: 8px;
+        border-radius: 5px;
+        outline: none;
+        -webkit-appearance: none;
+        background: #ddd;
+      }
+
+      .settings-group input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #667eea;
+        cursor: pointer;
+      }
+
+      .settings-group input[type="range"]::-moz-range-thumb {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: #667eea;
+        cursor: pointer;
+      }
+
+      .value-display {
+        text-align: right;
+        color: #667eea;
+        font-weight: bold;
+      }
+
+      .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .checkbox-group input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+      }
+
+      .exercise-list {
+        list-style: none;
+      }
+
+      .exercise-list li {
+        padding: 8px;
+        margin-bottom: 5px;
+        background: white;
+        border-radius: 5px;
+        font-size: 0.9em;
+      }
+
+      .loading-spinner {
+        text-align: center;
+        padding: 20px;
+      }
+
+      .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #667eea;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (max-width: 1024px) {
+        .main-content {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
   <body>
-    <h2>Exercise Classifier (Seq 90)</h2>
-    <video id="video" width="640" height="480" autoplay muted></video>
-    <canvas id="canvas" width="640" height="480"></canvas>
-    <pre id="output"></pre>
+    <div class="container">
+      <div class="header">
+        <h1>🏋️ Exercise Classifier</h1>
+        <p>Real-time pose-based exercise recognition using ONNX Runtime</p>
+      </div>
+
+      <div class="main-content">
+        <div class="video-section">
+          <div class="video-container">
+            <video id="videoElement" playsinline></video>
+            <canvas id="canvasElement"></canvas>
+            <div class="overlay-info" id="overlayInfo" style="display: none">
+              <div class="prediction-text" id="predictionText">
+                Initializing...
+              </div>
+              <div class="confidence-bar-container">
+                <div
+                  class="confidence-bar"
+                  id="confidenceBar"
+                  style="width: 0%"
+                ></div>
+              </div>
+              <div class="confidence-text" id="confidenceText">0%</div>
+              <div class="status-badge status-loading" id="statusBadge">
+                Loading Model...
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top: 20px">
+            <h3>Controls</h3>
+            <div class="controls">
+              <button class="btn btn-start" id="startBtn" disabled>
+                ▶️ Start Camera
+              </button>
+              <button class="btn btn-stop" id="stopBtn" disabled>
+                ⏹️ Stop Camera
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar">
+          <div class="card">
+            <h3>⚙️ Settings</h3>
+            <div class="settings-group">
+              <label>Confidence Threshold</label>
+              <input
+                type="range"
+                id="confidenceThreshold"
+                min="0"
+                max="100"
+                value="60"
+                step="5"
+              />
+              <div class="value-display" id="thresholdValue">0.60</div>
+            </div>
+            <div class="settings-group">
+              <label>Sequence Length</label>
+              <input
+                type="range"
+                id="sequenceLength"
+                min="10"
+                max="100"
+                value="30"
+                step="5"
+              />
+              <div class="value-display" id="seqLengthValue">30 frames</div>
+            </div>
+            <div class="checkbox-group">
+              <input type="checkbox" id="showLandmarks" checked />
+              <label for="showLandmarks">Show Pose Landmarks</label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>🎯 Live Predictions</h3>
+            <div class="probability-chart" id="probabilityChart">
+              <div class="loading-spinner">
+                <div class="spinner"></div>
+                <p>Waiting for predictions...</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>🏷️ Exercise Classes</h3>
+            <ul class="exercise-list" id="exerciseList">
+              <li>Loading classes...</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <script>
-      const videoElement = document.getElementById("video");
-      const canvasElement = document.getElementById("canvas");
+      // Configuration
+      const CONFIG = {
+        MODEL_PATH: "exercise_classifier.onnx",
+        NUM_LANDMARKS: 33,
+        LANDMARK_DIMS: 3,
+        EXPECTED_LANDMARKS: 99,
+        ANGLES_DIM: 12,
+        TOTAL_FEATURES: 111,
+        TORSO_SCALE_EPSILON: 1e-6,
+
+        // Landmark indices
+        LEFT_HIP: 23,
+        RIGHT_HIP: 24,
+        LEFT_SHOULDER: 11,
+        RIGHT_SHOULDER: 12,
+
+        // Joint chains for angle calculation
+        JOINT_CHAINS: [
+          [12, 14, 16], // Right shoulder
+          [11, 13, 15], // Left shoulder
+          [14, 12, 16], // Right elbow
+          [13, 11, 15], // Left elbow
+          [24, 23, 26], // Right hip
+          [23, 24, 25], // Left hip
+          [26, 24, 28], // Right knee
+          [25, 23, 27], // Left knee
+          [28, 26, 32], // Right ankle
+          [27, 25, 31], // Left ankle
+          [12, 24, 26], // Torso inclination
+          [11, 23, 12], // Spine alignment
+        ],
+
+        // Exercise classes - UPDATE THIS WITH YOUR ACTUAL CLASSES
+        EXERCISE_CLASSES: ["idle", "Jumping Jacks", "Push-ups", "Squats"],
+      };
+
+      let predictionHistory = [];
+      const SMOOTHING_WINDOW = 15; // adjust for more/less smoothing
+
+      function getSmoothedPrediction(probabilities) {
+        const maxIndex = probabilities.indexOf(Math.max(...probabilities));
+
+        // Add prediction to history
+        predictionHistory.push(maxIndex);
+
+        // Keep only last SMOOTHING_WINDOW predictions
+        if (predictionHistory.length > SMOOTHING_WINDOW) {
+          predictionHistory.shift();
+        }
+
+        // Calculate mode (most frequent)
+        const freq = {};
+        for (const p of predictionHistory) {
+          freq[p] = (freq[p] || 0) + 1;
+        }
+
+        let mode = maxIndex;
+        let highest = 0;
+        Object.keys(freq).forEach((key) => {
+          if (freq[key] > highest) {
+            highest = freq[key];
+            mode = parseInt(key);
+          }
+        });
+
+        return mode;
+      }
+
+      // Global state
+      let onnxSession = null;
+      let pose = null;
+      let camera = null;
+      let isRunning = false;
+      let landmarkBuffer = [];
+      let confidenceThreshold = 0.6;
+      let sequenceLength = 30;
+      let showLandmarks = true;
+
+      // DOM elements
+      const videoElement = document.getElementById("videoElement");
+      const canvasElement = document.getElementById("canvasElement");
       const ctx = canvasElement.getContext("2d");
-      const outputElement = document.getElementById("output");
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const overlayInfo = document.getElementById("overlayInfo");
 
-      let session;
+      // Initialize
+      async function init() {
+        try {
+          updateStatus("Loading ONNX model...", "loading");
+          await loadONNXModel();
 
-      // Sequence buffer
-      const SEQ_LEN = 90;
-      const NUM_ANGLES = 14;
-      let angleBuffer = [];
+          updateStatus("Initializing MediaPipe...", "loading");
+          await initMediaPipe();
+
+          updateExerciseList();
+          setupEventListeners();
+
+          updateStatus("Ready to start", "ready");
+          startBtn.disabled = false;
+        } catch (error) {
+          console.error("Initialization error:", error);
+          updateStatus("Error: " + error.message, "loading");
+          alert("Failed to initialize: " + error.message);
+        }
+      }
 
       // Load ONNX model
-      async function loadModel() {
-        session = await ort.InferenceSession.create("exercise_classifier.onnx");
-        console.log("ONNX model loaded");
+      async function loadONNXModel() {
+        try {
+          onnxSession = await ort.InferenceSession.create(CONFIG.MODEL_PATH);
+          console.log("ONNX model loaded successfully");
+        } catch (error) {
+          throw new Error(
+            "Failed to load ONNX model. Make sure exercise_classifier.onnx is in the same directory."
+          );
+        }
       }
 
-      // Calculate angle between 3 points (in degrees)
-      function angle(p1, p2, p3) {
-        const a = Math.hypot(p2.x - p3.x, p2.y - p3.y);
-        const b = Math.hypot(p1.x - p3.x, p1.y - p3.y);
-        const c = Math.hypot(p1.x - p2.x, p1.y - p2.y);
-        return (
-          Math.acos((b * b + c * c - a * a) / (2 * b * c)) * (180 / Math.PI)
-        );
+      // Initialize MediaPipe Pose
+      async function initMediaPipe() {
+        pose = new Pose({
+          locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`;
+          },
+        });
+
+        pose.setOptions({
+          modelComplexity: 1,
+          smoothLandmarks: true,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5,
+        });
+
+        pose.onResults(onPoseResults);
       }
 
-      // Compute 14 angles from landmarks
-      function computeAngles(landmarks) {
-        return [
-          angle(landmarks[11], landmarks[13], landmarks[15]),
-          angle(landmarks[12], landmarks[14], landmarks[16]),
-          angle(landmarks[23], landmarks[25], landmarks[27]),
-          angle(landmarks[24], landmarks[26], landmarks[28]),
-          angle(landmarks[11], landmarks[23], landmarks[25]),
-          angle(landmarks[12], landmarks[24], landmarks[26]),
-          angle(landmarks[23], landmarks[11], landmarks[13]),
-          angle(landmarks[24], landmarks[12], landmarks[14]),
-          angle(landmarks[13], landmarks[11], landmarks[23]),
-          angle(landmarks[14], landmarks[12], landmarks[24]),
-          angle(landmarks[15], landmarks[13], landmarks[11]),
-          angle(landmarks[16], landmarks[14], landmarks[12]),
-          angle(landmarks[25], landmarks[23], landmarks[11]),
-          angle(landmarks[26], landmarks[24], landmarks[12]),
+      // Extract landmarks from MediaPipe results
+      function extractLandmarks(results) {
+        if (!results.poseLandmarks) return null;
+
+        const landmarks = [];
+        for (const lm of results.poseLandmarks) {
+          landmarks.push(lm.x, lm.y, lm.z);
+        }
+        return new Float32Array(landmarks);
+      }
+
+      // Relative normalization
+      function relativeNormalizeLandmarks(landmarks) {
+        const lmReshaped = [];
+        for (let i = 0; i < CONFIG.NUM_LANDMARKS; i++) {
+          lmReshaped.push([
+            landmarks[i * 3],
+            landmarks[i * 3 + 1],
+            landmarks[i * 3 + 2],
+          ]);
+        }
+
+        // Calculate mid-hip
+        const midHip = [
+          (lmReshaped[CONFIG.LEFT_HIP][0] + lmReshaped[CONFIG.RIGHT_HIP][0]) /
+            2,
+          (lmReshaped[CONFIG.LEFT_HIP][1] + lmReshaped[CONFIG.RIGHT_HIP][1]) /
+            2,
+          (lmReshaped[CONFIG.LEFT_HIP][2] + lmReshaped[CONFIG.RIGHT_HIP][2]) /
+            2,
         ];
-      }
 
-      // Run model on buffered sequence
-      async function runModel(seq) {
-        if (!session) return;
-        const flatArray = seq.flat(); // shape [90*14]
-        const inputTensor = new ort.Tensor(
-          "float32",
-          new Float32Array(flatArray),
-          [1, SEQ_LEN, NUM_ANGLES]
+        // Center to mid-hip
+        const centered = lmReshaped.map((lm) => [
+          lm[0] - midHip[0],
+          lm[1] - midHip[1],
+          lm[2] - midHip[2],
+        ]);
+
+        // Calculate mid-shoulder
+        const midShoulder = [
+          (centered[CONFIG.LEFT_SHOULDER][0] +
+            centered[CONFIG.RIGHT_SHOULDER][0]) /
+            2,
+          (centered[CONFIG.LEFT_SHOULDER][1] +
+            centered[CONFIG.RIGHT_SHOULDER][1]) /
+            2,
+          (centered[CONFIG.LEFT_SHOULDER][2] +
+            centered[CONFIG.RIGHT_SHOULDER][2]) /
+            2,
+        ];
+
+        // Calculate torso length
+        let torsoLength = Math.sqrt(
+          midShoulder[0] ** 2 + midShoulder[1] ** 2 + midShoulder[2] ** 2
         );
-        const feeds = { input: inputTensor };
-        const results = await session.run(feeds);
-        const output = results.output.data;
-        outputElement.textContent =
-          "Predicted logits: [" +
-          Array.from(output)
-            .map((v) => v.toFixed(3))
-            .join(", ") +
-          "]";
+
+        if (torsoLength < CONFIG.TORSO_SCALE_EPSILON) {
+          torsoLength = CONFIG.TORSO_SCALE_EPSILON;
+        }
+
+        // Scale by torso length
+        const normalized = centered.map((lm) => [
+          lm[0] / torsoLength,
+          lm[1] / torsoLength,
+          lm[2] / torsoLength,
+        ]);
+
+        // Flatten back to array
+        const result = [];
+        for (const lm of normalized) {
+          result.push(...lm);
+        }
+        return new Float32Array(result);
       }
 
-      // MediaPipe Pose setup
-      const pose = new Pose({
-        locateFile: (file) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
-      });
-      pose.setOptions({
-        modelComplexity: 1,
-        smoothLandmarks: true,
-        enableSegmentation: false,
-      });
-      pose.onResults(onResults);
+      // Calculate angles from normalized landmarks
+      function calculateAngles(landmarks) {
+        const lmReshaped = [];
+        for (let i = 0; i < CONFIG.NUM_LANDMARKS; i++) {
+          lmReshaped.push([
+            landmarks[i * 3],
+            landmarks[i * 3 + 1],
+            landmarks[i * 3 + 2],
+          ]);
+        }
 
-      // Webcam
-      const camera = new Camera(videoElement, {
-        onFrame: async () => await pose.send({ image: videoElement }),
-        width: 640,
-        height: 480,
-      });
-      camera.start();
+        const angles = [];
 
-      // Handle results
-      async function onResults(results) {
+        for (const [a, mid, c] of CONFIG.JOINT_CHAINS) {
+          const A = lmReshaped[a];
+          const B = lmReshaped[mid];
+          const C = lmReshaped[c];
+
+          // Vectors
+          const vecBA = [A[0] - B[0], A[1] - B[1], A[2] - B[2]];
+          const vecBC = [C[0] - B[0], C[1] - B[1], C[2] - B[2]];
+
+          // Normalize vectors
+          const normBA =
+            Math.sqrt(vecBA[0] ** 2 + vecBA[1] ** 2 + vecBA[2] ** 2) + 1e-6;
+          const normBC =
+            Math.sqrt(vecBC[0] ** 2 + vecBC[1] ** 2 + vecBC[2] ** 2) + 1e-6;
+
+          const BA_norm = vecBA.map((v) => v / normBA);
+          const BC_norm = vecBC.map((v) => v / normBC);
+
+          // Dot product
+          let dot =
+            BA_norm[0] * BC_norm[0] +
+            BA_norm[1] * BC_norm[1] +
+            BA_norm[2] * BC_norm[2];
+          dot = Math.max(-1, Math.min(1, dot));
+
+          // Angle in degrees, normalized to [0, 1]
+          const angle = (Math.acos(dot) * 180) / Math.PI / 180.0;
+          angles.push(angle);
+        }
+
+        return new Float32Array(angles);
+      }
+
+      // Preprocess single frame
+      function preprocessFrame(landmarks) {
+        const normalized = relativeNormalizeLandmarks(landmarks);
+        const angles = calculateAngles(normalized);
+
+        // Combine: [12 angles | 99 normalized landmarks]
+        const combined = new Float32Array(CONFIG.TOTAL_FEATURES);
+        combined.set(angles, 0);
+        combined.set(normalized, CONFIG.ANGLES_DIM);
+
+        return combined;
+      }
+
+      // Preprocess sequence for model
+      function preprocessSequence(buffer) {
+        const sequence = new Float32Array(
+          sequenceLength * CONFIG.TOTAL_FEATURES
+        );
+
+        for (let i = 0; i < sequenceLength; i++) {
+          if (i < buffer.length && buffer[i] !== null) {
+            const features = preprocessFrame(buffer[i]);
+            sequence.set(features, i * CONFIG.TOTAL_FEATURES);
+          }
+          // else: zeros (padding)
+        }
+
+        return sequence;
+      }
+
+      // Run inference
+      async function runInference(sequence) {
+        try {
+          const inputTensor = new ort.Tensor("float32", sequence, [
+            1,
+            sequenceLength,
+            CONFIG.TOTAL_FEATURES,
+          ]);
+          const feeds = { input: inputTensor };
+          const results = await onnxSession.run(feeds);
+          const output = results.output.data;
+
+          // Apply softmax
+          const maxLogit = Math.max(...output);
+          const expScores = Array.from(output).map((x) =>
+            Math.exp(x - maxLogit)
+          );
+          const sumExp = expScores.reduce((a, b) => a + b, 0);
+          const probabilities = expScores.map((x) => x / sumExp);
+
+          return probabilities;
+        } catch (error) {
+          console.error("Inference error:", error);
+          return null;
+        }
+      }
+
+      // Handle pose results
+      async function onPoseResults(results) {
+        if (!isRunning) return;
+
+        // Draw on canvas
+        canvasElement.width = videoElement.videoWidth;
+        canvasElement.height = videoElement.videoHeight;
+
         ctx.save();
         ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
         ctx.drawImage(
@@ -126,32 +765,211 @@
           canvasElement.height
         );
 
-        if (results.poseLandmarks) {
+        // Draw landmarks if enabled
+        if (showLandmarks && results.poseLandmarks) {
           drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {
             color: "#00FF00",
-            lineWidth: 2,
+            lineWidth: 4,
           });
           drawLandmarks(ctx, results.poseLandmarks, {
             color: "#FF0000",
-            lineWidth: 1,
+            lineWidth: 2,
           });
-
-          const angles = computeAngles(results.poseLandmarks);
-
-          // Update buffer
-          angleBuffer.push(angles);
-          if (angleBuffer.length > SEQ_LEN) angleBuffer.shift(); // keep last 90 frames
-
-          if (angleBuffer.length === SEQ_LEN) {
-            await runModel(angleBuffer);
-          }
         }
 
         ctx.restore();
+
+        // Extract and process landmarks
+        const landmarks = extractLandmarks(results);
+
+        if (landmarks) {
+          landmarkBuffer.push(landmarks);
+          if (landmarkBuffer.length > sequenceLength) {
+            landmarkBuffer.shift();
+          }
+
+          // Make prediction when buffer is full
+          if (landmarkBuffer.length === sequenceLength) {
+            const sequence = preprocessSequence(landmarkBuffer);
+            const probabilities = await runInference(sequence);
+
+            if (probabilities) {
+              updatePredictions(probabilities);
+            }
+
+            updateStatus(
+              `Analyzing (${landmarkBuffer.length}/${sequenceLength})`,
+              "ready"
+            );
+          } else {
+            updateStatus(
+              `Buffering (${landmarkBuffer.length}/${sequenceLength})`,
+              "buffering"
+            );
+          }
+        } else {
+          updateStatus("No pose detected", "buffering");
+        }
+
+        overlayInfo.style.display = "block";
       }
 
-      // Load model
-      loadModel();
+      // Update predictions UI
+      function updatePredictions(probabilities) {
+        const maxIdx = getSmoothedPrediction(probabilities);
+
+        const confidence = probabilities[maxIdx];
+        const predictedClass = CONFIG.EXERCISE_CLASSES[maxIdx];
+
+        // Update overlay
+        const predictionText = document.getElementById("predictionText");
+        const confidenceBar = document.getElementById("confidenceBar");
+        const confidenceText = document.getElementById("confidenceText");
+
+        if (confidence >= confidenceThreshold) {
+          predictionText.textContent = predictedClass;
+          predictionText.style.color = "#4CAF50";
+        } else {
+          predictionText.textContent = "Uncertain - Keep Moving";
+          predictionText.style.color = "#ff9800";
+        }
+
+        confidenceBar.style.width = confidence * 100 + "%";
+        confidenceText.textContent = (confidence * 100).toFixed(1) + "%";
+
+        // Update probability chart
+        updateProbabilityChart(probabilities);
+      }
+
+      // Update probability chart
+      function updateProbabilityChart(probabilities) {
+        const chartContainer = document.getElementById("probabilityChart");
+        chartContainer.innerHTML = "";
+
+        probabilities.forEach((prob, idx) => {
+          const item = document.createElement("div");
+          item.className = "prob-item";
+
+          const label = document.createElement("div");
+          label.className = "prob-label";
+          label.innerHTML = `
+                    <span>${CONFIG.EXERCISE_CLASSES[idx]}</span>
+                    <span>${(prob * 100).toFixed(1)}%</span>
+                `;
+
+          const barContainer = document.createElement("div");
+          barContainer.className = "prob-bar-container";
+
+          const bar = document.createElement("div");
+          bar.className = "prob-bar";
+          bar.style.width = prob * 100 + "%";
+
+          barContainer.appendChild(bar);
+          item.appendChild(label);
+          item.appendChild(barContainer);
+          chartContainer.appendChild(item);
+        });
+      }
+
+      // Update status
+      function updateStatus(text, type) {
+        const statusBadge = document.getElementById("statusBadge");
+        statusBadge.textContent = text;
+        statusBadge.className = "status-badge status-" + type;
+      }
+
+      // Update exercise list
+      function updateExerciseList() {
+        const list = document.getElementById("exerciseList");
+        list.innerHTML = "";
+
+        CONFIG.EXERCISE_CLASSES.forEach((exercise, idx) => {
+          const li = document.createElement("li");
+          li.textContent = `${idx}: ${exercise}`;
+          list.appendChild(li);
+        });
+      }
+
+      // Start camera
+      async function startCamera() {
+        try {
+          isRunning = true;
+          landmarkBuffer = [];
+
+          camera = new Camera(videoElement, {
+            onFrame: async () => {
+              if (isRunning) {
+                await pose.send({ image: videoElement });
+              }
+            },
+            width: 1280,
+            height: 720,
+          });
+
+          await camera.start();
+
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+
+          updateStatus("Camera started", "ready");
+        } catch (error) {
+          console.error("Camera error:", error);
+          alert("Failed to start camera: " + error.message);
+          isRunning = false;
+        }
+      }
+
+      // Stop camera
+      function stopCamera() {
+        isRunning = false;
+
+        if (camera) {
+          camera.stop();
+          camera = null;
+        }
+
+        landmarkBuffer = [];
+
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+
+        ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        overlayInfo.style.display = "none";
+
+        updateStatus("Camera stopped", "ready");
+      }
+
+      // Setup event listeners
+      function setupEventListeners() {
+        startBtn.addEventListener("click", startCamera);
+        stopBtn.addEventListener("click", stopCamera);
+
+        document
+          .getElementById("confidenceThreshold")
+          .addEventListener("input", (e) => {
+            confidenceThreshold = e.target.value / 100;
+            document.getElementById("thresholdValue").textContent =
+              confidenceThreshold.toFixed(2);
+          });
+
+        document
+          .getElementById("sequenceLength")
+          .addEventListener("input", (e) => {
+            sequenceLength = parseInt(e.target.value);
+            document.getElementById("seqLengthValue").textContent =
+              sequenceLength + " frames";
+            landmarkBuffer = [];
+          });
+
+        document
+          .getElementById("showLandmarks")
+          .addEventListener("change", (e) => {
+            showLandmarks = e.target.checked;
+          });
+      }
+
+      // Start initialization
+      init();
     </script>
   </body>
 </html>

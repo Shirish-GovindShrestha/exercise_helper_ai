@@ -10,6 +10,8 @@ import seaborn as sns
 import config
 from models.autoencoder import FrameAutoencoder
 from models.lstm import ExerciseClassifier
+import joblib
+
 
 DEVICE = config.DEVICE
 # --- Load label map ---
@@ -22,9 +24,28 @@ else:
 
 # --- Load test data ---
 X_test, y_test = load_split("test", mode=config.INPUT_FEATURE)
+pca = joblib.load("pca_model.joblib")  # must be the same PCA used in training
+
+# Reshape to 2D (N*T, F)
+N, T, F = X_test.shape
+X_test_2d = X_test.reshape(N*T, F)
+
+# Transform test data
+X_test_pca_2d = pca.transform(X_test_2d)
+
+# Reshape back to sequence shape (N, T, n_components)
+X_test_pca = X_test_pca_2d.reshape(N, T, pca.n_components_)
+
+# ---- End PCA ----
+
+# Convert to tensors and DataLoader
 X_test_t = torch.from_numpy(X_test).float()
 y_test_t = torch.from_numpy(y_test).long()
-test_loader = DataLoader(TensorDataset(X_test_t, y_test_t), batch_size=config.LSTM_BATCH_SIZE, shuffle=False)
+test_loader = DataLoader(
+    TensorDataset(X_test_t, y_test_t),
+    batch_size=config.LSTM_BATCH_SIZE,
+    shuffle=False
+)
 
 # --- Define models ---
 import torch.nn as nn
