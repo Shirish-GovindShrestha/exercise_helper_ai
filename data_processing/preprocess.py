@@ -4,6 +4,7 @@ from typing import List, Dict, Tuple
 import warnings
 import random
 import config
+from sklearn.model_selection import train_test_split
 
 # --- Configuration ---
 RAW_LANDMARKS_DIR = Path("data/landmarks")
@@ -56,42 +57,32 @@ random.seed(5)
 def relative_normalize_landmarks(sequences: List[np.ndarray]) -> List[np.ndarray]:
     """
     Applies centering (to Mid-Hip) and scaling (by Torso Length) to landmark sequences.
-    Input: List of arrays (N_samples, T, 99). Output: List of normalized arrays.
+    Optimized with efficient broadcasting and in-place operations.
     """
     normalized_sequences = []
 
     for seq_array in sequences:
         N, T, F = seq_array.shape
-        seq_reshaped = seq_array.reshape(N, T, NUM_LANDMARKS, 3).copy() # (N, T, 33, 3)
+        seq_reshaped = seq_array.reshape(N, T, NUM_LANDMARKS, 3)
         
-        # 1. Calculate Center (Mid-Hip)
-        # Mid-Hip is the average of landmarks 23 and 24.
-        P_mid_hip = (seq_reshaped[..., LEFT_HIP, :] + seq_reshaped[..., RIGHT_HIP, :]) / 2.0 # (N, T, 3)
+        # 1. Calculate Mid-Hip
+        P_mid_hip = (seq_reshaped[..., LEFT_HIP, :] + seq_reshaped[..., RIGHT_HIP, :]) * 0.5
         
-        # 2. Centering: Subtract Mid-Hip from all 33 landmarks
-        # Uses broadcasting: (N, T, 33, 3) - (N, T, 1, 3)
-        seq_reshaped = seq_reshaped - np.expand_dims(P_mid_hip, axis=2) 
+        # 2. Center around Mid-Hip
+        seq_reshaped = seq_reshaped - P_mid_hip[..., None, :]
         
-        # 3. Calculate Scaling Factor (Torso Length)
-        # Mid-Shoulder is the average of landmarks 11 and 12.
-        P_mid_shoulder = (seq_reshaped[..., LEFT_SHOULDER, :] + seq_reshaped[..., RIGHT_SHOULDER, :]) / 2.0
+        # 3. Calculate Mid-Shoulder after centering (for torso length scale)
+        P_mid_shoulder = (seq_reshaped[..., LEFT_SHOULDER, :] + seq_reshaped[..., RIGHT_SHOULDER, :]) * 0.5
         
-        # Torso Length (distance between Mid-Shoulder and Mid-Hip - which is now at origin (0,0,0) after centering)
-        # We can just use the norm of P_mid_shoulder
-        D_scale = np.linalg.norm(P_mid_shoulder, axis=-1, keepdims=True) # (N, T, 1)
+        # 4. Calculate torso length and scale
+        D_scale = np.linalg.norm(P_mid_shoulder, axis=-1, keepdims=True)
+        D_scale = np.maximum(D_scale, TORSO_SCALE_EPSILON)  # Faster than np.where
         
-        # Replace zero distances (for padded/zero frames) with epsilon
-        D_scale = np.where(D_scale < TORSO_SCALE_EPSILON, TORSO_SCALE_EPSILON, D_scale)
-        
-        # 4. Scaling: Divide all coordinates by Torso Length
-        # Uses broadcasting: (N, T, 33, 3) / (N, T, 1, 1)
-        # We need to reshape D_scale for correct broadcasting to (N, T, 1, 1)
-        D_scale_broadcast = np.expand_dims(D_scale, axis=2)
-        
-        normalized_array = seq_reshaped / D_scale_broadcast
+        # 5. Scale all coordinates (broadcast efficiently)
+        seq_reshaped /= D_scale[..., None, :]
         
         # Reshape back to (N, T, 99)
-        normalized_sequences.append(normalized_array.reshape(N, T, F))
+        normalized_sequences.append(seq_reshaped.reshape(N, T, F))
         
     return normalized_sequences
 
@@ -101,57 +92,61 @@ def relative_normalize_landmarks(sequences: List[np.ndarray]) -> List[np.ndarray
 # ---------------------------------------------
 
 def calculate_angles_from_sequence(seq: np.ndarray) -> np.ndarray:
-    """Calculates angles for a single sequence/sample: (T, 99) -> (T, 12)."""
-    T, F = seq.shape
-    
-    # (T, 99) -> (T, 33, 3)
+    """Fully vectorized angle calculation: (T, 99) -> (T, 12)."""
+    T = seq.shape[0]
     seq_reshaped = seq.reshape(T, NUM_LANDMARKS, 3)
 
-    # Pre-create arrays
-    angles = np.zeros((T, ANGLES_DIM), dtype=np.float32)
-    
-    # Detect padding frames
+    # Detect padding frames once
     zero_mask = np.all(seq_reshaped == 0, axis=(1, 2))
-
-    for chain_idx, (a, mid, c) in enumerate(JOINT_CHAINS):
-        A = seq_reshaped[:, a]
-        B = seq_reshaped[:, mid]
-        C = seq_reshaped[:, c]
-
-        # Compute angle per frame
-        vecBA = A - B
-        vecBC = C - B
-
-        # Normalize vectors for dot product
-        BA_norm = vecBA / (np.linalg.norm(vecBA, axis=1, keepdims=True) + 1e-6)
-        BC_norm = vecBC / (np.linalg.norm(vecBC, axis=1, keepdims=True) + 1e-6)
-
-        dot = np.clip(np.sum(BA_norm * BC_norm, axis=1), -1, 1)
-        # Normalize angle 0-1
-        angle = np.degrees(np.arccos(dot)) / 180.0
-
-        angles[:, chain_idx] = angle
-
-    # Restore padding frames to zeros
+    
+    # Convert JOINT_CHAINS to numpy arrays for vectorized indexing
+    chains = np.array(JOINT_CHAINS, dtype=np.int32)  # (12, 3)
+    
+    # Extract all points at once: (T, 12, 3) for each position
+    A = seq_reshaped[:, chains[:, 0]]  # (T, 12, 3)
+    B = seq_reshaped[:, chains[:, 1]]  # (T, 12, 3)
+    C = seq_reshaped[:, chains[:, 2]]  # (T, 12, 3)
+    
+    # Compute vectors
+    vecBA = A - B  # (T, 12, 3)
+    vecBC = C - B  # (T, 12, 3)
+    
+    # Normalize vectors
+    BA_norm = np.linalg.norm(vecBA, axis=2, keepdims=True) + 1e-6
+    BC_norm = np.linalg.norm(vecBC, axis=2, keepdims=True) + 1e-6
+    
+    vecBA_normalized = vecBA / BA_norm
+    vecBC_normalized = vecBC / BC_norm
+    
+    # Compute dot products and angles
+    dot = np.sum(vecBA_normalized * vecBC_normalized, axis=2)  # (T, 12)
+    dot = np.clip(dot, -1.0, 1.0)
+    
+    # Normalize angles to [0, 1]
+    angles = np.arccos(dot) * (1.0 / np.pi)  # Faster than np.degrees / 180
+    
+    # Zero out padding frames
     angles[zero_mask] = 0
-
-    return angles
+    
+    return angles.astype(np.float32)
 
 def landmarks_to_angles_and_landmarks(sequences: List[np.ndarray]) -> List[np.ndarray]:
-    """Convert landmarks -> 12 angles + 99 landmarks per frame, for a list of arrays."""
+    """Convert landmarks -> 12 angles + 99 landmarks per frame. Optimized."""
     combined_sequences = []
 
-    for seq_array in sequences: # seq_array shape is (N_samples, T, 99)
-        combined_samples = []
-        for seq in seq_array: # seq shape is (T, 99)
-            angles = calculate_angles_from_sequence(seq)
-            # Combine: [angles (12) | landmarks (99)] = 111 features
-            combined = np.concatenate([angles, seq], axis=1) # (T, 111)
-            combined_samples.append(combined)
+    for seq_array in sequences:  # (N_samples, T, 99)
+        N, T, F = seq_array.shape
         
-        # Stack the combined samples back into one array for the list
-        if combined_samples:
-            combined_sequences.append(np.stack(combined_samples, axis=0))
+        # Pre-allocate output array
+        combined = np.empty((N, T, TOTAL_FEATURES), dtype=np.float32)
+        
+        # Process all samples
+        for i in range(N):
+            angles = calculate_angles_from_sequence(seq_array[i])
+            combined[i, :, :ANGLES_DIM] = angles
+            combined[i, :, ANGLES_DIM:] = seq_array[i]
+        
+        combined_sequences.append(combined)
 
     return combined_sequences
 
@@ -160,20 +155,24 @@ def landmarks_to_angles_and_landmarks(sequences: List[np.ndarray]) -> List[np.nd
 # -----------------------------
 
 def add_gaussian_noise(sequence: np.ndarray, std_dev: float = 0.001) -> np.ndarray:
-    """Adds noise only to non-zero frames of the landmark data."""
+    """Adds noise only to non-zero frames. Optimized."""
     valid_mask = np.any(sequence != 0, axis=1, keepdims=True)
-    noise = np.random.normal(0, std_dev, sequence.shape)
-    
-    sequence = sequence + (noise * valid_mask)
-    
-    # Note: Clipping is no longer to [0, 1] as relative coordinates can be negative
-    # We rely on the network learning the range, but we might want to clip to a reasonable range 
-    # like [-2, 2] to prevent outliers if the torso length is tiny due to bad tracking.
-    return sequence # We avoid clipping to preserve relative values
+    noise = np.random.normal(0, std_dev, sequence.shape).astype(np.float32)
+    return sequence + (noise * valid_mask)
 
 def time_warp(sequence: np.ndarray) -> np.ndarray:
-    T = sequence.shape[0]
-    speed = random.choice([1.0, random.uniform(0.8, 0.9), random.uniform(1.1, 1.2)])
+    """Time warping with optimized interpolation."""
+    T, F = sequence.shape
+    
+    # Faster random choice
+    rand = random.random()
+    if rand < 0.33:
+        speed = 1.0
+    elif rand < 0.66:
+        speed = random.uniform(0.8, 0.9)
+    else:
+        speed = random.uniform(1.1, 1.2)
+    
     if speed == 1.0:
         return sequence
 
@@ -181,24 +180,23 @@ def time_warp(sequence: np.ndarray) -> np.ndarray:
     idx_old = np.linspace(0, T - 1, T)
     idx_new = np.linspace(0, T - 1, target_len)
 
-    warped = np.vstack([
-        np.interp(idx_new, idx_old, sequence[:, i])
-        for i in range(sequence.shape[1])
-    ]).T
+    # Transpose for vectorized interpolation
+    warped = np.array([np.interp(idx_new, idx_old, sequence[:, i]) 
+                       for i in range(F)], dtype=np.float32).T
 
-    # Normalize length
+    # Adjust length
     if warped.shape[0] > EXPECTED_SEQUENCE_LENGTH:
-        warped = warped[:EXPECTED_SEQUENCE_LENGTH]
+        return warped[:EXPECTED_SEQUENCE_LENGTH]
     elif warped.shape[0] < EXPECTED_SEQUENCE_LENGTH:
-        padding_value = warped[-1] if np.any(warped[-1] != 0) else np.zeros(warped.shape[1])
-        pad = np.tile(padding_value, (EXPECTED_SEQUENCE_LENGTH - warped.shape[0], 1))
-        warped = np.vstack([warped, pad])
-
+        pad_len = EXPECTED_SEQUENCE_LENGTH - warped.shape[0]
+        padding = np.tile(warped[-1], (pad_len, 1)) if np.any(warped[-1] != 0) else np.zeros((pad_len, F), dtype=np.float32)
+        return np.vstack([warped, padding])
+    
     return warped
 
-
 def random_frame_dropout(sequence: np.ndarray, max_frames: int = 3) -> np.ndarray:
-    valid = np.where(np.any(sequence != 0, axis=1))[0]
+    """Random frame dropout. Optimized."""
+    valid = np.flatnonzero(np.any(sequence != 0, axis=1))
     if len(valid) == 0:
         return sequence
 
@@ -237,7 +235,8 @@ def augment_landmarks(landmark_sequences: List[np.ndarray], volume_multiplier: i
 #           LOADING
 # -----------------------------
 
-def stratified_video_split(video_paths: List[Path]):
+def stratified_video_split(video_paths: List[Path], exercise_label: int) -> Tuple[List[Path], List[Path], List[Path]]:
+    """Split videos using sklearn's train_test_split with stratification."""
     n = len(video_paths)
     if n == 0:
         return [], [], []
@@ -245,16 +244,39 @@ def stratified_video_split(video_paths: List[Path]):
         warnings.warn(f"Only {n} videos found. Using first for all splits.")
         return [video_paths[0]], [], []
 
-    n_train = max(1, int(n * SPLIT_RATIOS["train"]))
-    n_eval = max(1, int(n * SPLIT_RATIOS["eval"]))
-    n_test = max(1, n - n_train - n_eval)
-
-    shuffled = np.random.permutation(video_paths).tolist()
-    return (
-        shuffled[:n_train],
-        shuffled[n_train:n_train + n_eval],
-        shuffled[n_train + n_eval:n_train + n_eval + n_test]
-    )
+    # Create labels for stratification (all same for this exercise)
+    labels = np.full(n, exercise_label)
+    
+    try:
+        # First split: train vs (eval + test)
+        train, temp, _, _ = train_test_split(
+            video_paths, labels,
+            train_size=SPLIT_RATIOS["train"],
+            stratify=labels,
+            random_state=42
+        )
+        
+        # Second split: eval vs test from the temp set
+        if len(temp) >= 2:
+            eval_ratio = SPLIT_RATIOS["eval"] / (SPLIT_RATIOS["eval"] + SPLIT_RATIOS["test"])
+            temp_labels = np.full(len(temp), exercise_label)
+            eval_set, test_set, _, _ = train_test_split(
+                temp, temp_labels,
+                train_size=eval_ratio,
+                stratify=temp_labels,
+                random_state=42
+            )
+        else:
+            eval_set, test_set = temp, []
+        
+        return train, eval_set, test_set
+    
+    except ValueError:
+        # Fallback if stratification fails (e.g., too few samples)
+        warnings.warn(f"Stratification failed for {n} samples. Using simple split.")
+        n_train = max(1, int(n * SPLIT_RATIOS["train"]))
+        n_eval = max(1, int(n * SPLIT_RATIOS["eval"]))
+        return video_paths[:n_train], video_paths[n_train:n_train + n_eval], video_paths[n_train + n_eval:]
 
 def validate_sequence_shape(data: np.ndarray, path: Path):
     if data.ndim != 3:
@@ -353,11 +375,13 @@ def main():
 
     # Splits
     splits = {}
-    print("\nStep 1: Splitting")
+    print("\nStep 1: Splitting (using sklearn stratified split)")
     for ex in exercise_dirs:
         files = sorted(ex.glob("*.npy"))
-        train, ev, test = stratified_video_split(files)
+        label = label_map[ex.name]
+        train, ev, test = stratified_video_split(files, label)
         splits[ex.name] = {"train": train, "eval": ev, "test": test}
+        print(f"  {ex.name}: {len(train)} train, {len(ev)} eval, {len(test)} test")
 
     PROCESSED_DIR.mkdir(exist_ok=True)
     np.save(PROCESSED_DIR / "label_map.npy", np.array(label_names, dtype=object))

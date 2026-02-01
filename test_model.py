@@ -8,9 +8,7 @@ from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 import config
-from models.autoencoder import FrameAutoencoder
 from models.lstm import ExerciseClassifier
-import joblib
 
 
 DEVICE = config.DEVICE
@@ -24,19 +22,6 @@ else:
 
 # --- Load test data ---
 X_test, y_test = load_split("test", mode=config.INPUT_FEATURE)
-pca = joblib.load("pca_model.joblib")  # must be the same PCA used in training
-
-# Reshape to 2D (N*T, F)
-N, T, F = X_test.shape
-X_test_2d = X_test.reshape(N*T, F)
-
-# Transform test data
-X_test_pca_2d = pca.transform(X_test_2d)
-
-# Reshape back to sequence shape (N, T, n_components)
-X_test_pca = X_test_pca_2d.reshape(N, T, pca.n_components_)
-
-# ---- End PCA ----
 
 # Convert to tensors and DataLoader
 X_test_t = torch.from_numpy(X_test).float()
@@ -47,33 +32,22 @@ test_loader = DataLoader(
     shuffle=False
 )
 
-# --- Define models ---
-import torch.nn as nn
-
-# --- Load autoencoder encoder ---
-autoencoder = FrameAutoencoder( 
-    input_dim=config.INPUT_DIM,
-    latent_dim=config.AE_LATENT_DIM,
-    dropout=config.AE_DROPOUT
-)
-autoencoder.to(DEVICE)
-autoencoder.eval()
-
 # --- Load classifier ---
-model_saved= torch.load(config.LSTM_BEST, weights_only=False)
+print(f"Loading model from {config.LSTM_BEST}...")
+model_saved = torch.load(config.LSTM_BEST, weights_only=False, map_location=DEVICE)
+
 model = ExerciseClassifier(
-    autoencoder=autoencoder,
     num_classes=NUM_CLASSES,
-    input_dim=config.INPUT_DIM if not config.USE_AUTOENCODER else config.AE_LATENT_DIM, # raw landmark input dimension
-    hidden_dim=config.LSTM_HIDDEN_DIM,
-    lstm_num_layers=config.LSTM_NUM_LAYERS,
-    freeze_encoder=config.FREEZE_ENCODER,
-    use_autoencoder=config.USE_AUTOENCODER,
-    use_bilstm=config.LSTM_BIDIRECTIONAL,
-    dropout=config.LSTM_DROPOUT
-).to(config.DEVICE)
+    input_dim=model_saved['config']['input_dim'],
+    hidden_dim=model_saved['config']['hidden_dim'],
+    lstm_num_layers=model_saved['config']['lstm_num_layers'],
+    use_bilstm=model_saved['config']['use_bilstm'],
+    dropout=model_saved['config']['dropout']
+).to(DEVICE)
+
 model.load_state_dict(model_saved['model_state_dict'])
 model.eval()
+print("✅ Model loaded successfully")
 
 # --- Evaluation ---
 all_preds, all_labels = [], []

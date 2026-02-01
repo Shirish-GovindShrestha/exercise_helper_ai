@@ -157,11 +157,9 @@ def extract_features(
     if mode == "combined":
         return X
     elif mode == "angles":
-        # Extract first 12 features (angles)
-        return X[:, :, :ANGLES_DIM]
+        return X[..., :ANGLES_DIM]  # Faster ellipsis notation
     elif mode == "landmarks":
-        # Extract last 99 features (landmarks)
-        return X[:, :, ANGLES_DIM:]
+        return X[..., ANGLES_DIM:]  # Faster ellipsis notation
     else:
         raise ValueError(
             f"Invalid mode '{mode}'. Must be one of: 'landmarks', 'angles', 'combined'"
@@ -184,22 +182,15 @@ def find_split_files(split_name: str) -> List[Path]:
             "Run preprocessing script first."
         )
     
-    npz_files = []
-    
-    # Iterate through exercise directories
-    for ex_dir in PROCESSED_DIR.iterdir():
-        # Skip non-directories and metadata files
-        if not ex_dir.is_dir():
-            continue
-        
-        # Look for split subdirectory
-        split_dir = ex_dir / split_name
-        if not split_dir.exists() or not split_dir.is_dir():
-            continue
-        
-        # Collect all .npz files in this split
-        for npz_path in split_dir.glob("*.npz"):
-            npz_files.append(npz_path)
+    # Optimized: Use list comprehension with generator
+    npz_files = [
+        npz_path
+        for ex_dir in PROCESSED_DIR.iterdir()
+        if ex_dir.is_dir()
+        for split_dir in [ex_dir / split_name]
+        if split_dir.is_dir()
+        for npz_path in split_dir.glob("*.npz")
+    ]
     
     return sorted(npz_files)
 
@@ -254,9 +245,8 @@ def load_split(
             f"Expected structure: {PROCESSED_DIR}/<exercise>/{split_name}/*.npz"
         )
     
-    # Load all data
-    all_X = []
-    all_y = []
+    # Load all data - optimized with list comprehension
+    loaded_data = []
     
     for npz_path in npz_files:
         try:
@@ -264,47 +254,40 @@ def load_split(
             X = data["features"]
             y = data["labels"]
             
-            if X.size > 0 and y.size > 0:
-                if len(X) != len(y):
-                    warnings.warn(
-                        f"Shape mismatch in {npz_path.name}: "
-                        f"X={X.shape}, y={y.shape}"
-                    )
-                    continue
-                
-                all_X.append(X)
-                all_y.append(y)
-            
+            if X.size > 0 and y.size > 0 and len(X) == len(y):
+                loaded_data.append((X, y))
+            elif len(X) != len(y):
+                warnings.warn(
+                    f"Shape mismatch in {npz_path.name}: "
+                    f"X={X.shape}, y={y.shape}"
+                )
         except Exception as e:
             warnings.warn(f"Error loading {npz_path.name}: {e}")
             continue
     
-    if not all_X:
+    if not loaded_data:
         raise RuntimeError(f"No valid data loaded for '{split_name}' split")
     
-    # Concatenate all data
-    X_combined = np.concatenate(all_X, axis=0).astype(np.float32)
-    y = np.concatenate(all_y, axis=0).astype(np.int64)
+    # Optimized concatenation - unzip and concatenate
+    all_X, all_y = zip(*loaded_data)
+    X_combined = np.concatenate(all_X, axis=0, dtype=np.float32)
+    y = np.concatenate(all_y, axis=0, dtype=np.int64)
     
     # Shuffle if requested
     if shuffle:
-        if seed is not None:
-            rng = np.random.RandomState(seed)
-        else:
-            rng = np.random
-        
+        rng = np.random.RandomState(seed) if seed is not None else np.random
         indices = rng.permutation(len(X_combined))
         X_combined = X_combined[indices]
         y = y[indices]
     
-    # Validate labels
+    # Validate labels - optimized
     n_classes = len(get_label_map())
     unique_labels = np.unique(y)
     
     if len(unique_labels) == 0:
         raise RuntimeError(f"No labels found in '{split_name}' split")
     
-    if np.any(unique_labels >= n_classes) or np.any(unique_labels < 0):
+    if np.any((unique_labels >= n_classes) | (unique_labels < 0)):
         warnings.warn(
             f"Found labels outside valid range [0, {n_classes-1}]: {unique_labels}"
         )
@@ -341,13 +324,12 @@ def get_class_distribution(y: np.ndarray) -> Dict[str, int]:
     unique, counts = np.unique(y, return_counts=True)
     label_map = get_label_map()
     
-    distribution = {}
-    for label_int, count in zip(unique, counts):
-        if 0 <= label_int < len(label_map):
-            class_name = str(label_map[label_int])
-            distribution[class_name] = int(count)
-    
-    return distribution
+    # Optimized: Direct dictionary comprehension with filtering
+    return {
+        str(label_map[label_int]): int(count)
+        for label_int, count in zip(unique, counts)
+        if 0 <= label_int < len(label_map)
+    }
 
 
 def print_dataset_info(mode: FeatureMode = "combined"):
@@ -369,13 +351,13 @@ def print_dataset_info(mode: FeatureMode = "combined"):
             print(f"  {idx}: {name}")
         
         # Feature info
+        feature_info_map = {
+            "landmarks": f"Using only landmarks: {LANDMARKS_DIM} features",
+            "angles": f"Using only angles: {ANGLES_DIM} features",
+            "combined": f"Using combined: {ANGLES_DIM} angles + {LANDMARKS_DIM} landmarks = {COMBINED_DIM} features"
+        }
         print(f"\n🔧 Feature Mode: {mode}")
-        if mode == "landmarks":
-            print(f"  Using only landmarks: {LANDMARKS_DIM} features")
-        elif mode == "angles":
-            print(f"  Using only angles: {ANGLES_DIM} features")
-        else:
-            print(f"  Using combined: {ANGLES_DIM} angles + {LANDMARKS_DIM} landmarks = {COMBINED_DIM} features")
+        print(f"  {feature_info_map.get(mode, 'Unknown mode')}")
         
         # Load normalization stats
         try:
@@ -390,15 +372,17 @@ def print_dataset_info(mode: FeatureMode = "combined"):
         print(f"\n📦 Data Splits:")
         for split_name in ["train", "eval", "test"]:
             try:
-                X, y = load_split(split_name, mode=mode, shuffle=False)
+                X, y = load_split(split_name, mode=mode, shuffle=False, use_cache=True)
                 dist = get_class_distribution(y)
                 
                 print(f"\n  {split_name.upper()}:")
                 print(f"    Total samples: {len(X):,}")
                 print(f"    Shape: {X.shape}")
                 print(f"    Distribution:")
+                # Optimized: Pre-calculate total once
+                total = len(y)
                 for class_name, count in sorted(dist.items()):
-                    percentage = 100 * count / len(y)
+                    percentage = 100.0 * count / total
                     print(f"      {class_name:15s}: {count:5,} ({percentage:5.1f}%)")
                 
             except Exception as e:

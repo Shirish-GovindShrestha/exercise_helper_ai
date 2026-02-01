@@ -9,8 +9,10 @@ from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
 import seaborn as sns
 from models.early_stopping import EarlyStopping
+from models.autoencoder import FrameAutoencoder as UnifiedAutoencoder
 from models.lstm import ExerciseClassifier
 import config
+from sklearn.decomposition import PCA
 
 
 DEVICE = config.DEVICE
@@ -23,6 +25,31 @@ NUM_CLASSES = len(label_map)
 
 X_train, y_train = load_split("train", mode=config.INPUT_FEATURE)
 X_eval, y_eval = load_split("eval", mode=config.INPUT_FEATURE)
+
+'''N, T, F = X_train.shape
+X_train_2d = X_train.reshape(N*T, F)
+
+# Fit PCA
+pca = PCA(n_components=config.INPUT_DIM)   # Use 9 because you found optimal
+X_train_pca_2d = pca.fit_transform(X_train_2d)
+
+# Transform eval
+M = X_eval.shape[0]
+X_eval_pca_2d = pca.transform(X_eval.reshape(M*T, F))
+
+
+# Reshape back to (N, T, 9)
+X_train_pca = X_train_pca_2d.reshape(N, T, config.INPUT_DIM)
+X_eval_pca = X_eval_pca_2d.reshape(M, T, config.INPUT_DIM)
+
+import joblib
+joblib.dump(pca, "pca_model.joblib")
+
+
+
+
+
+print("PCA shapes:", X_train_pca.shape, X_eval_pca.shape)'''
 
 X_train_t = torch.from_numpy(X_train).float()
 y_train_t = torch.from_numpy(y_train).long()
@@ -52,18 +79,46 @@ class_weights = torch.FloatTensor(class_weights).to(DEVICE)
 
 print(f"✅ Loaded {len(X_train)} training samples, {len(X_eval)} eval samples")
 print(f"📊 Number of classes: {NUM_CLASSES}")
-print(f"📏 Input dimension: {X_train.shape[-1]}")
 
-print(f"\n🏗️ Building GRU classifier...")
+autoencoder = None
+
+
+# --- Load or Initialize Autoencoder ---
+if config.USE_AUTOENCODER:
+    print(f"\n🔧 Loading pretrained autoencoder from {config.AE_BEST}...")
+    checkpoint = torch.load(config.AE_BEST, map_location=DEVICE, weights_only=False)
+    
+    autoencoder = UnifiedAutoencoder(
+        input_dim=config.INPUT_DIM,
+        latent_dim=config.AE_LATENT_DIM,
+        dropout=config.AE_DROPOUT
+    )
+    
+    # Try to load state dict flexibly
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    missing, unexpected = autoencoder.load_state_dict(state_dict, strict=False)
+    
+    if missing:
+        print(f"⚠️ Missing keys: {missing}")
+    if unexpected:
+        print(f"⚠️ Unexpected keys: {len(unexpected)} (ignored)")
+    
+    autoencoder.to(DEVICE)
+    print("✅ Pretrained autoencoder loaded successfully")
+
+
+print(f"\n🏗️ Building classifier (freeze_encoder={config.FREEZE_ENCODER})...")
 model = ExerciseClassifier(
+    autoencoder=autoencoder,
     num_classes=NUM_CLASSES,
-    input_dim=X_train.shape[-1],
+    input_dim=config.INPUT_DIM if not config.USE_AUTOENCODER else config.AE_LATENT_DIM, # raw landmark input dimension
     hidden_dim=config.LSTM_HIDDEN_DIM,
     lstm_num_layers=config.LSTM_NUM_LAYERS,
+    freeze_encoder=config.FREEZE_ENCODER,
+    use_autoencoder=config.USE_AUTOENCODER,
     use_bilstm=config.LSTM_BIDIRECTIONAL,
     dropout=config.LSTM_DROPOUT
-).to(DEVICE)
-
+).to(config.DEVICE)
 
 # Count total parameters
 total_params = sum(p.numel() for p in model.parameters())
@@ -72,8 +127,27 @@ trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Total parameters: {total_params:,}")
 print(f"Trainable parameters: {trainable_params:,}")
 
+
+# Setup optimizer with different learning rates
+param_groups = []
+
+# Always train LSTM + classifier
+param_groups.append({'params': model.lstm.parameters(), 'lr': config.LSTM_LR, 'name': 'LSTM'})
+param_groups.append({'params': model.fc.parameters(), 'lr': config.LSTM_LR, 'name': 'FC'})
+
+# Train/fine-tune encoder if needed
+if config.USE_AUTOENCODER and not config.FREEZE_ENCODER:
+    encoder_lr = config.LSTM_LR * config.ENCODER_LR_RATIO
+    print(f"🔓 Fine-tuning encoder (LR={encoder_lr:.6f}) + LSTM + classifier (LR={config.LSTM_LR:.6f})")
+    param_groups.append({'params': model.encoder.parameters(), 'lr': encoder_lr, 'name': 'Encoder'})
+
+elif config.USE_AUTOENCODER and config.FREEZE_ENCODER:
+    print("🔒 Encoder frozen — training only LSTM + classifier")
+else:
+    print("ℹ️ No encoder — training LSTM + classifier only")
+
 # Build optimizer
-optimizer = optim.Adam(model.parameters(), lr=config.LSTM_LR, weight_decay=config.LSTM_WEIGHT_DECAY)
+optimizer = optim.Adam(param_groups, weight_decay=config.LSTM_WEIGHT_DECAY)
 scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=config.LSTM_SCHEDULER_GAMMA)
 
 
@@ -205,20 +279,25 @@ print(classification_report(
 # Save model
 torch.save({
     'model_state_dict': model.state_dict(),
+    'encoder_state_dict': model.encoder.state_dict() if config.USE_AUTOENCODER else None,
     'num_classes': NUM_CLASSES,
     'label_map': label_map,
     'accuracy': best_metrics["accuracy"],
     'precision': best_metrics["precision"],
     'recall': best_metrics["recall"],
     'f1': best_metrics["f1"],
+    'use_pretrained_autoencoder': config.USE_AUTOENCODER,
+    'freeze_encoder': config.FREEZE_ENCODER,
     'config': {
-        'input_dim': X_train.shape[-1],
+        'input_dim': config.INPUT_DIM,
+        'latent_dim': config.AE_LATENT_DIM,
         'hidden_dim': config.LSTM_HIDDEN_DIM,
         'lstm_num_layers': config.LSTM_NUM_LAYERS,
         'use_bilstm': config.LSTM_BIDIRECTIONAL,
         'dropout': config.LSTM_DROPOUT,
         'batch_size': config.LSTM_BATCH_SIZE,
-        'lr': config.LSTM_LR
+        'lr': config.LSTM_LR,
+        'encoder_lr_ratio': config.ENCODER_LR_RATIO
     }
 }, config.LSTM_BEST)
 

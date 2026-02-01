@@ -4,39 +4,27 @@ import torch.nn as nn
 class ExerciseClassifier(nn.Module):
     def __init__(
         self,
-        autoencoder=None,
         num_classes=5,
-        input_dim=33*3,
+        input_dim=111,
         hidden_dim=128,
         lstm_num_layers=1,
-        freeze_encoder=True,
-        use_autoencoder=True,
         use_bilstm=False,
         dropout=0.2
     ):
         super().__init__()
 
-        self.use_autoencoder = use_autoencoder
-        self.freeze_encoder = freeze_encoder
         self.use_bilstm = use_bilstm
 
-        # --- Encoder setup ---
-        if use_autoencoder and autoencoder is not None:
-            self.encoder = autoencoder
-            # Freeze/unfreeze encoder
-            for p in self.encoder.parameters():
-                p.requires_grad = not freeze_encoder
-        else:
-            self.encoder = None
-
-        # --- LSTM for temporal modeling ---
+        # --- GRU for temporal modeling ---
         self.lstm = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_dim,
             num_layers=lstm_num_layers,
             batch_first=True,
-            bidirectional=use_bilstm
+            bidirectional=use_bilstm,
+            dropout=dropout if lstm_num_layers > 1 else 0
         )
+        print("Drop out value: ", dropout)
 
         # --- Classifier head ---
         fc_input_dim = hidden_dim * 2 if use_bilstm else hidden_dim
@@ -47,22 +35,8 @@ class ExerciseClassifier(nn.Module):
         )
 
     def forward(self, x):
-        # --- Encode if using autoencoder ---
-        if self.use_autoencoder and self.encoder is not None:
-            if self.freeze_encoder:
-                with torch.no_grad():
-                    z_seq = self.encoder.encode(x)
-            else:
-                z_seq = self.encoder.encode(x)
-        else:
-            z_seq = x  # raw input
-
-            
-
-        # --- LSTM ---
-        #lstm_out, (h_n, c_n) = self.lstm(z_seq)
-
-        lstm_out, h_n, = self.lstm(z_seq)
+        # GRU processing
+        lstm_out, h_n = self.lstm(x)
 
         # --- Last hidden state ---
         if self.use_bilstm:

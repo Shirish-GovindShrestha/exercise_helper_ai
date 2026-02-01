@@ -12,6 +12,7 @@ dependencies = [
     "onnxruntime>=1.23.2",
     "onnxscript>=0.5.0",
     "opencv-python>=4.11.0.86",
+    "optuna>=4.6.0",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
     "streamlit>=1.51.0",
