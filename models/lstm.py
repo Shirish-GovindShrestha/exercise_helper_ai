@@ -16,7 +16,7 @@ class ExerciseClassifier(nn.Module):
         self.use_bilstm = use_bilstm
 
         # --- GRU for temporal modeling ---
-        self.lstm = nn.GRU(
+        self.gru = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_dim,
             num_layers=lstm_num_layers,
@@ -34,9 +34,9 @@ class ExerciseClassifier(nn.Module):
             nn.Linear(fc_input_dim, num_classes)
         )
 
-    def forward(self, x):
+    def forward(self, x, h0=None):
         # GRU processing
-        lstm_out, h_n = self.lstm(x)
+        gru_out, h_n = self.gru(x, h0)
 
         # --- Last hidden state ---
         if self.use_bilstm:

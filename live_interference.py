@@ -6,7 +6,6 @@ import mediapipe as mp
 from collections import deque
 import config
 from models.lstm import ExerciseClassifier
-from models.autoencoder import FrameAutoencoder as UnifiedAutoencoder
 
 # Page config
 st.set_page_config(
@@ -65,41 +64,52 @@ def init_mediapipe():
 def load_model():
     """Load the trained model"""
     try:
-        checkpoint = torch.load(config.LSTM_BEST, map_location=config.DEVICE, weights_only=False)
+        checkpoint = torch.load(config.GRU_BEST, map_location=config.DEVICE, weights_only=False)
         
-        # Get model config
+        # Get model config from checkpoint
         num_classes = checkpoint['num_classes']
         label_map = checkpoint['label_map']
-        use_autoencoder = checkpoint.get('use_pretrained_autoencoder', False)
         
-        # Load autoencoder if used
-        autoencoder = None
-        if use_autoencoder:
-            autoencoder = UnifiedAutoencoder(
-                input_dim=config.INPUT_DIM,
-                latent_dim=config.AE_LATENT_DIM,
-                dropout=config.AE_DROPOUT
-            )
-            if checkpoint.get('encoder_state_dict'):
-                autoencoder.load_state_dict(checkpoint['encoder_state_dict'], strict=False)
-            autoencoder.to(config.DEVICE)
+        # Infer architecture from state_dict
+        state_dict = checkpoint['model_state_dict']
         
-        # Create classifier
+        # Count GRU layers by checking layer indices in keys
+        max_layer = 0
+        for key in state_dict.keys():
+            if 'gru.weight_ih_l' in key:
+                layer_num = int(key.split('_l')[1].split('_')[0])
+                max_layer = max(max_layer, layer_num)
+        gru_num_layers = max_layer + 1
+        
+        # Check if bidirectional
+        use_bilstm = any('_reverse' in key for key in state_dict.keys())
+        
+        # Infer hidden_dim from weight shape
+        # For GRU: weight_hh_l0 has shape [3*hidden_dim, hidden_dim]
+        weight_hh_key = 'gru.weight_hh_l0'
+        if weight_hh_key in state_dict:
+            hidden_dim = state_dict[weight_hh_key].shape[1]
+        else:
+            hidden_dim = checkpoint.get('hidden_dim', 96)
+        
+        # Get dropout (default to checkpoint value or 0.2)
+        dropout = checkpoint.get('dropout', 0.2)
+        
+        # Create classifier with inferred hyperparameters
         model = ExerciseClassifier(
-            autoencoder=autoencoder,
             num_classes=num_classes,
-            input_dim=config.INPUT_DIM if not use_autoencoder else config.AE_LATENT_DIM,
-            hidden_dim=config.LSTM_HIDDEN_DIM,
-            lstm_num_layers=config.LSTM_NUM_LAYERS,
-            freeze_encoder=checkpoint.get('freeze_encoder', True),
-            use_autoencoder=use_autoencoder,
-            use_bilstm=config.LSTM_BIDIRECTIONAL,
-            dropout=config.LSTM_DROPOUT
+            input_dim=config.INPUT_DIM,
+            hidden_dim=hidden_dim,
+            lstm_num_layers=gru_num_layers,
+            use_bilstm=use_bilstm,
+            dropout=dropout
         )
         
         model.load_state_dict(checkpoint['model_state_dict'])
         model.to(config.DEVICE)
         model.eval()
+        
+        st.success(f"✅ Loaded model: {gru_num_layers} layers, hidden_dim={hidden_dim}, bidirectional={use_bilstm}")
         
         return model, label_map, checkpoint
     except Exception as e:
