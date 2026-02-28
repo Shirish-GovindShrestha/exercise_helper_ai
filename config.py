@@ -40,6 +40,18 @@ GRU_PATIENCE = 15
 GRU_SCHEDULER_GAMMA = 0.9747512556836427
 
 
+# ----- TCN classifier -----
+TCN_NUM_CHANNELS = [64, 64]   # channel sizes per temporal block
+TCN_KERNEL_SIZE = 4                       # conv kernel size
+TCN_DROPOUT = 0.2
+TCN_BATCH_SIZE = 32
+TCN_LR = 1e-4
+TCN_WEIGHT_DECAY = 1e-4
+TCN_EPOCHS = 100
+TCN_PATIENCE = 15
+TCN_SCHEDULER_GAMMA = 0.98
+
+
 # ----- compute -----
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -49,6 +61,7 @@ MODEL_DIR = Path("saved_models")
 MODEL_DIR.mkdir(exist_ok=True, parents=True)
 AE_BEST = MODEL_DIR / "autoencoder_best.pth"
 GRU_BEST = MODEL_DIR / "lstm_classifier_best.pth"
+TCN_BEST = MODEL_DIR / "tcn_classifier_best.pth"
 
 
 

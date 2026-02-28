@@ -9,7 +9,7 @@ from sklearn.utils.class_weight import compute_class_weight
 import matplotlib.pyplot as plt
 import seaborn as sns
 from models.early_stopping import EarlyStopping
-from models.lstm import ExerciseClassifier
+from models.tcn import ExerciseClassifier
 import config
 
 
@@ -36,12 +36,12 @@ y_test_t = torch.from_numpy(y_test).long()
 
 train_loader = DataLoader(
     TensorDataset(X_train_t, y_train_t),
-    batch_size=config.GRU_BATCH_SIZE,
+    batch_size=config.TCN_BATCH_SIZE,
     shuffle=True
 )
 eval_loader = DataLoader(
     TensorDataset(X_eval_t, y_eval_t),
-    batch_size=config.GRU_BATCH_SIZE,
+    batch_size=config.TCN_BATCH_SIZE,
     shuffle=False
 )
 
@@ -57,14 +57,13 @@ print(f"✅ Loaded {len(X_train)} training samples, {len(X_eval)} eval samples, 
 print(f"📊 Number of classes: {NUM_CLASSES}")
 print(f"📏 Input dimension: {X_train.shape[-1]}")
 
-print(f"\n🏗️ Building GRU classifier...")
+print(f"\n🏗️ Building TCN classifier...")
 model = ExerciseClassifier(
     num_classes=NUM_CLASSES,
     input_dim=X_train.shape[-1],
-    hidden_dim=config.GRU_HIDDEN_DIM,
-    lstm_num_layers=config.GRU_NUM_LAYERS,
-    use_bilstm=config.GRU_BIDIRECTIONAL,
-    dropout=config.GRU_DROPOUT
+    num_channels=config.TCN_NUM_CHANNELS,
+    kernel_size=config.TCN_KERNEL_SIZE,
+    dropout=config.TCN_DROPOUT
 ).to(DEVICE)
 
 
@@ -76,20 +75,20 @@ print(f"Total parameters: {total_params:,}")
 print(f"Trainable parameters: {trainable_params:,}")
 
 # Build optimizer
-optimizer = optim.Adam(model.parameters(), lr=config.GRU_LR, weight_decay=config.GRU_WEIGHT_DECAY)
-scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=config.GRU_SCHEDULER_GAMMA)
+optimizer = optim.Adam(model.parameters(), lr=config.TCN_LR, weight_decay=config.TCN_WEIGHT_DECAY)
+scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=config.TCN_SCHEDULER_GAMMA)
 
 
 # Loss function with class weights
 criterion = nn.CrossEntropyLoss(weight=class_weights)
-early_stopping = EarlyStopping(patience=config.GRU_PATIENCE, mode='max')
+early_stopping = EarlyStopping(patience=config.TCN_PATIENCE, mode='max')
 
 
 # --- Training Loop ---
-print(f"\n🚀 Training for up to {config.GRU_EPOCHS} epochs with early stopping (patience={config.GRU_PATIENCE})...")
+print(f"\n🚀 Training for up to {config.TCN_EPOCHS} epochs with early stopping (patience={config.TCN_PATIENCE})...")
 best_metrics = {}
 
-for epoch in range(config.GRU_EPOCHS):
+for epoch in range(config.TCN_EPOCHS):
     # Training phase
     model.train()
     total_loss = 0
@@ -133,7 +132,7 @@ for epoch in range(config.GRU_EPOCHS):
     scheduler.step()
 
     print("-" * 100)
-    print(f"Epoch {epoch+1:3d}/{config.GRU_EPOCHS} | Loss: {avg_loss:.4f} | "
+    print(f"Epoch {epoch+1:3d}/{config.TCN_EPOCHS} | Loss: {avg_loss:.4f} | "
           f"Acc: {acc:.4f} | P: {precision:.4f} | R: {recall:.4f} | F1: {f1:.4f}")
     
     # Early stopping based on F1 score
@@ -170,9 +169,9 @@ model.eval()
 test_preds, test_labels = [], []
 
 with torch.no_grad():
-    for i in range(0, len(X_test_t), config.GRU_BATCH_SIZE):
-        batch_X = X_test_t[i:i+config.GRU_BATCH_SIZE].to(DEVICE)
-        batch_y = y_test_t[i:i+config.GRU_BATCH_SIZE]
+    for i in range(0, len(X_test_t), config.TCN_BATCH_SIZE):
+        batch_X = X_test_t[i:i+config.TCN_BATCH_SIZE].to(DEVICE)
+        batch_y = y_test_t[i:i+config.TCN_BATCH_SIZE]
         
         logits = model(batch_X)
         preds = logits.argmax(dim=1)
@@ -242,17 +241,17 @@ torch.save({
     'test_recall': test_recall,
     'test_f1': test_f1,
     'config': {
+        'model_type': 'tcn',
         'input_dim': X_train.shape[-1],
-        'hidden_dim': config.GRU_HIDDEN_DIM,
-        'lstm_num_layers': config.GRU_NUM_LAYERS,
-        'use_bilstm': config.GRU_BIDIRECTIONAL,
-        'dropout': config.GRU_DROPOUT,
-        'batch_size': config.GRU_BATCH_SIZE,
-        'lr': config.GRU_LR
+        'num_channels': config.TCN_NUM_CHANNELS,
+        'kernel_size': config.TCN_KERNEL_SIZE,
+        'dropout': config.TCN_DROPOUT,
+        'batch_size': config.TCN_BATCH_SIZE,
+        'lr': config.TCN_LR
     }
-}, config.GRU_BEST)
+}, config.TCN_BEST)
 
-print(f"\n✅ Best classifier + metrics saved to {config.GRU_BEST}")
+print(f"\n✅ Best classifier + metrics saved to {config.TCN_BEST}")
 print(f"📈 Confusion matrix saved to confusion_matrix.png")
 
 torch.cuda.empty_cache()

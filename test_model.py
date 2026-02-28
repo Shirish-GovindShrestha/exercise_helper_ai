@@ -8,7 +8,7 @@ from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 import config
-from models.lstm import ExerciseClassifier
+from models.tcn import ExerciseClassifier
 
 
 DEVICE = config.DEVICE
@@ -28,21 +28,21 @@ X_test_t = torch.from_numpy(X_test).float()
 y_test_t = torch.from_numpy(y_test).long()
 test_loader = DataLoader(
     TensorDataset(X_test_t, y_test_t),
-    batch_size=config.LSTM_BATCH_SIZE,
+    batch_size=config.TCN_BATCH_SIZE,
     shuffle=False
 )
 
 # --- Load classifier ---
-print(f"Loading model from {config.LSTM_BEST}...")
-model_saved = torch.load(config.LSTM_BEST, weights_only=False, map_location=DEVICE)
+print(f"Loading model from {config.TCN_BEST}...")
+model_saved = torch.load(config.TCN_BEST, weights_only=False, map_location=DEVICE)
+model_config = model_saved.get('config', {})
 
 model = ExerciseClassifier(
     num_classes=NUM_CLASSES,
-    input_dim=model_saved['config']['input_dim'],
-    hidden_dim=model_saved['config']['hidden_dim'],
-    lstm_num_layers=model_saved['config']['lstm_num_layers'],
-    use_bilstm=model_saved['config']['use_bilstm'],
-    dropout=model_saved['config']['dropout']
+    input_dim=model_config.get('input_dim', config.INPUT_DIM),
+    num_channels=model_config.get('num_channels', config.TCN_NUM_CHANNELS),
+    kernel_size=model_config.get('kernel_size', config.TCN_KERNEL_SIZE),
+    dropout=model_config.get('dropout', config.TCN_DROPOUT)
 ).to(DEVICE)
 
 model.load_state_dict(model_saved['model_state_dict'])

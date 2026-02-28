@@ -9,7 +9,7 @@ from sklearn.metrics import f1_score
 from sklearn.utils.class_weight import compute_class_weight
 
 import config
-from models.lstm import ExerciseClassifier
+from models.tcn import ExerciseClassifier
 from data_processing.dataset_loader import load_split, get_label_map
 
 
@@ -75,13 +75,15 @@ def objective(trial):
     """Optuna objective function: return F1 score for a sampled hyperparameter set."""
 
     # --- Hyperparameters to tune ---
-    hidden_dim = trial.suggest_int("hidden_dim", 64, 256, step=32)
-    lstm_layers = trial.suggest_int("lstm_num_layers", 1, 4)
+    num_blocks = trial.suggest_int("num_blocks", 3, 6)
+    channel_size = trial.suggest_categorical("channel_size", [32, 64, 96, 128])
+    kernel_size = trial.suggest_categorical("kernel_size", [3, 5, 7])
     dropout = trial.suggest_float("dropout", 0.1, 0.4)
-    use_bilstm = trial.suggest_categorical("use_bilstm", [False, True])
     lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
     batch_size = trial.suggest_categorical("batch_size", [32, 64])
     weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
+
+    num_channels = [channel_size] * num_blocks
 
     # --- Build dataloaders for this trial ---
     train_loader, val_loader, test_loader = make_loader(batch_size)
@@ -90,10 +92,9 @@ def objective(trial):
     model = ExerciseClassifier(
         num_classes=NUM_CLASSES,
         input_dim=config.INPUT_DIM,
-        hidden_dim=hidden_dim,
-        lstm_num_layers=lstm_layers,
-        dropout=dropout,
-        use_bilstm=use_bilstm
+        num_channels=num_channels,
+        kernel_size=kernel_size,
+        dropout=dropout
     ).to(DEVICE)
 
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -179,10 +180,10 @@ print(f"Total trials: {len(study.trials)}, Completed: {len([t for t in study.tri
 
 # Save result
 import json
-with open("best_lstm_hyperparams.json", "w") as f:
+with open("best_tcn_hyperparams.json", "w") as f:
     json.dump(study.best_trial.params, f, indent=4)
 
-print("\n📁 Saved to best_lstm_hyperparams.json")
+print("\n\U0001f4c1 Saved to best_tcn_hyperparams.json")
 
 # Print top 5 trials
 print("\n📊 Top 5 trials:")

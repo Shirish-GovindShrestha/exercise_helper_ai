@@ -5,7 +5,7 @@ import numpy as np
 import mediapipe as mp
 from collections import deque
 import config
-from models.lstm import ExerciseClassifier
+from models.tcn import ExerciseClassifier
 
 # Page config
 st.set_page_config(
@@ -497,7 +497,7 @@ def main():
         2. **Normalization**: Landmarks are centered to mid-hip and scaled by torso length
         3. **Angle Calculation**: 12 joint angles are computed from normalized landmarks
         4. **Feature Combination**: 12 angles + 99 normalized landmarks = 111 features
-        5. **Classification**: LSTM model analyzes the sequence to predict exercise type
+        5. **Classification**: TCN model analyzes the sequence to predict exercise type
         """)
 
 if __name__ == "__main__":
